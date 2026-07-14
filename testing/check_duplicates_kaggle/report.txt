@@ -1,0 +1,22 @@
+total images         : 917
+exact duplicates     : 3
+near duplicates      : 1
+cross-SPLIT dupes    : 2   <-- leakage in the shipped split
+unique images kept   : 913
+
+[TILE]  190 images | 5 boards | 6452 objects
+       objs/image: mean 34.0 median 30 p90 66 | empty 16
+       resolutions: [((1024, 1024), 190)]
+       GRAPH-VIABLE: YES
+
+[CROP]  102 images | 11 boards | 585 objects
+       objs/image: mean 5.7 median 1 p90 1 | empty 0
+       resolutions: [((225, 225), 3), ((500, 500), 1), ((256, 197), 1)]
+       GRAPH-VIABLE: NO
+
+[BOARD]  621 images | 621 boards | 22579 objects
+       objs/image: mean 36.4 median 14 p90 82 | empty 1
+       resolutions: [((8256, 5504), 50), ((1000, 1000), 17), ((4112, 3008), 15)]
+       GRAPH-VIABLE: YES
+
+[TILE reassembled] 5 boards | components/board (pre-dedupe): median 1603 max 1689

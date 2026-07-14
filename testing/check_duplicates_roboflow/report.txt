@@ -1,0 +1,10 @@
+total images         : 672
+exact duplicates     : 0
+near duplicates      : 67
+cross-SPLIT dupes    : 24   <-- leakage in the shipped split
+unique images kept   : 605
+
+[BOARD]  605 images | 605 boards | 119301 objects
+       objs/image: mean 197.2 median 171 p90 387 | empty 0
+       resolutions: [((4112, 3008), 12), ((1830, 1338), 5), ((1898, 1388), 4)]
+       GRAPH-VIABLE: YES

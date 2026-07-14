@@ -1,0 +1,8 @@
+# 06_triage.py
+argparse
+numpy
+tqdm
+imagehash
+
+# 05_prepare_yolo.py
+opencv-python
