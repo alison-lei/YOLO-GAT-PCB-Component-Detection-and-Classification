@@ -9,7 +9,7 @@ unique images kept   : 913
        resolutions: [((1024, 1024), 190)]
        GRAPH-VIABLE: YES
 
-[CROP]  102 images | 11 boards | 585 objects
+[CROP]  102 images | 102 boards | 585 objects
        objs/image: mean 5.7 median 1 p90 1 | empty 0
        resolutions: [((225, 225), 3), ((500, 500), 1), ((256, 197), 1)]
        GRAPH-VIABLE: NO

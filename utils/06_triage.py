@@ -35,14 +35,15 @@ RE_CROP = re.compile(r"^(?P<cls>[a-zA-Z]+)(?P<idx>\d+)$")   # battery2, inductor
 
 
 def classify(stem):
+    """Board id MUST match how 05_prepare_yolo.py derives it: stem.split('__')[0]."""
     m = RE_TILE.match(stem)
     if m:
         return "TILE", m["board"], int(m["x"]), int(m["y"]), int(m["tile"])
     m = RE_CROP.match(stem)
     if m:
         # a whole-board name like "PCBA_17" has an underscore, so it won't match
-        return "CROP", f"crop:{m['cls'].lower()}", None, None, None
-    return "BOARD", f"board:{stem}", None, None, None
+        return "CROP", stem, None, None, None
+    return "BOARD", stem, None, None, None
 
 
 def n_objs(lab):
@@ -66,7 +67,7 @@ def main():
     import imagehash
 
     recs = []
-    for sp in ("train", "valid", "test"):
+    for sp in ("train", "valid", "val", "test"):
         idir = Path(a.root) / sp / "images"
         if not idir.is_dir():
             continue
@@ -98,7 +99,6 @@ def main():
         r["dupe_of"] = None
         if md5[s] in seen_md5:
             r["dupe_of"] = seen_md5[md5[s]]; r["dupe_kind"] = "exact"; n_exact += 1
-            print(seen_md5[md5[s]])
         elif ph[s] and ph[s] in seen_ph:
             r["dupe_of"] = seen_ph[ph[s]]; r["dupe_kind"] = "near"; n_near += 1
         else:
@@ -152,16 +152,22 @@ def main():
     (out / "report.txt").write_text(report)
 
     # ---------------- board-level split ----------------
-    # CROPs get split randomly (they are independent single-part photos).
-    # TILEs and BOARDs get split by board id, so no board straddles the line.
+    # TILE and BOARD: split by board id, so no board straddles the train/test line.
+    # CROP: ALL go to train. They are single-component studio shots on a black
+    # background -- a domain, not just a class distribution. Putting them in
+    # val/test would inflate mAP with trivially easy examples and make the number
+    # meaningless. val/test must be REAL BOARDS ONLY.
     rng = np.random.default_rng(a.seed)
     split = {"train": [], "valid": [], "test": []}
-    for group in ("TILE", "BOARD", "CROP"):
+
+    split["train"] += sorted({r["board"] for r in keep if r["group"] == "CROP"})
+
+    for group in ("TILE", "BOARD"):
         ids = sorted({r["board"] for r in keep if r["group"] == group})
         rng.shuffle(ids)
         n = len(ids)
-        n_te = max(1, int(n * a.test_frac))
-        n_va = max(1, int(n * a.val_frac))
+        n_te = max(1, int(round(n * a.test_frac)))
+        n_va = max(1, int(round(n * a.val_frac)))
         split["test"] += ids[:n_te]
         split["valid"] += ids[n_te:n_te + n_va]
         split["train"] += ids[n_te + n_va:]
@@ -170,12 +176,13 @@ def main():
     (out / "manifest.json").write_text(json.dumps(keep, indent=2))
 
     print(f"split: {len(split['train'])} train / {len(split['valid'])} valid / "
-          f"{len(split['test'])} test  (units = boards, not images)")
+          f"{len(split['test'])} test  (units = boards/crops, not tiles)")
     print(f"\n-> {out}/report.txt, split.json, manifest.json")
     print("\nRULES FROM HERE:")
-    print("  * CROP images  -> YOLO training ONLY. Never build a graph from them.")
-    print("  * TILE images  -> YOLO as-is; reassemble labels to board coords for GAT.")
-    print("  * BOARD images -> YOLO as-is; use directly as GAT graphs.")
+    print("  * CROP  -> YOLO train ONLY. Never in val/test. Never a graph.")
+    print("  * TILE  -> YOLO as-is; reassemble labels to board coords for GAT.")
+    print("  * BOARD -> YOLO as-is; use directly as GAT graphs.")
+    print("  * val/test contain REAL BOARDS ONLY, so mAP means something.")
 
 
 if __name__ == "__main__":

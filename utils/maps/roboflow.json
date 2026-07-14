@@ -1,0 +1,27 @@
+{
+  "_comment": "Roboflow index -> canonical index. Canonical order is the CANON list in 05_prepare_yolo.py. Rows marked VERIFY must be checked with 07_inspect_class.py before you trust them. Use 22 ('unknown') rather than -1 to drop: deleting a box turns that component into BACKGROUND and actively teaches YOLO to suppress it.",
+
+  "0":  1,   "_0":  "Button                -> button",
+  "1":  3,   "_1":  "Capacitor             -> capacitor",
+  "2":  3,   "_2":  "Capacitor Jumper      -> capacitor   (Kaggle has no jumper subtype)",
+  "3":  4,   "_3":  "Clock                 -> clock",
+  "4":  5,   "_4":  "Connector             -> connector",
+  "5":  6,   "_5":  "Diode                 -> diode",
+  "6":  22,  "_6":  "EM                    -> unknown     ** VERIFY ** (EMI shield? electro-mechanical?)",
+  "7":  3,   "_7":  "Electrolytic Capacitor-> capacitor   (visually distinct, but Kaggle merges it)",
+  "8":  11,  "_8":  "Ferrite Bead          -> inductor",
+  "9":  10,  "_9":  "IC                    -> ic",
+  "10": 11,  "_10": "Inductor              -> inductor",
+  "11": 22,  "_11": "Jumper                -> unknown     ** VERIFY ** (wire link? or a pin header -> pins?)",
+  "12": 12,  "_12": "Led                   -> led",
+  "13": 13,  "_13": "Pads                  -> pads",
+  "14": 14,  "_14": "Pins                  -> pins",
+  "15": 17,  "_15": "Resistor              -> resistor",
+  "16": 17,  "_16": "Resistor Jumper       -> resistor    (0-ohm link; Kaggle has no subtype)",
+  "17": 17,  "_17": "Resistor Network      -> resistor    ** VERIFY ** (SOIC-like package: Kaggle may call it 'ic')",
+  "18": 18,  "_18": "Switch                -> switch",
+  "19": 13,  "_19": "Test Point            -> pads        ** VERIFY ** (could be its own thing)",
+  "20": 21,  "_20": "Transistor            -> transistor",
+  "21": 22,  "_21": "Unknown Unlabeled     -> unknown",
+  "22": 10,  "_22": "iC                    -> ic          (case bug in their yaml)"
+}

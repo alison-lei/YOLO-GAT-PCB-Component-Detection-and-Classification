@@ -1,6 +1,6 @@
 """
-05_prepare_yolo.py — Class remap + CLAHE + dihedral expansion (geometry-aware, symmetry-preserving image processing model).
-Run on each source dataset; they all land in one merged YOLO root with a shared taxonomy.
+05_prepare_yolo.py — Class remap + CLAHE + dihedral expansion. Run on each
+source dataset; they all land in one merged YOLO root with a shared taxonomy.
 
 Offline we do ONLY the transforms Ultralytics cannot do at runtime:
   * CLAHE            -> deterministic preprocessing; must match at inference
@@ -16,6 +16,7 @@ Why rot90 alone is enough:
 Usage:
     python 05_prepare_yolo.py --src /data/kaggle   --map maps/kaggle.json   --out merged --split-json boards/split.json
     python 05_prepare_yolo.py --src /data/roboflow --map maps/roboflow.json --out merged
+    python 05_prepare_yolo.py --src /data/fpic_c   --map maps/fpic.json     --out fpic_pre --no-rot90
 
 map json:  {"0": 3, "1": 3, "2": 9, ...}   old class id -> canonical id, or -1 to DROP
 """
@@ -72,26 +73,39 @@ def main():
     ap.add_argument("--no-rot90", action="store_true")
     ap.add_argument("--split-json", default=None,
                     help='board-level split: {"train": ["00001",...], "valid": [...], "test": [...]}')
+    ap.add_argument("--manifest", default=None,
+                    help="triage/manifest.json — only images listed there are kept, "
+                         "so duplicates found by 06_triage.py are dropped here")
     a = ap.parse_args()
 
-    cmap = {int(k): int(v) for k, v in json.loads(Path(a.map).read_text()).items()}
+    # keys starting with "_" are human-readable comments; skip them
+    cmap = {int(k): int(v) for k, v in json.loads(Path(a.map).read_text()).items()
+            if not k.startswith("_")}
     split_of = None
     if a.split_json:
         sj = json.loads(Path(a.split_json).read_text())
         split_of = {b: s for s, bs in sj.items() for b in bs}
+
+    keep_stems = None
+    if a.manifest:
+        keep_stems = {r["stem"] for r in json.loads(Path(a.manifest).read_text())}
+        print(f"manifest: keeping {len(keep_stems)} unique images, dropping duplicates")
 
     out = Path(a.out)
     for sp in ("train", "valid", "test"):
         (out / sp / "images").mkdir(parents=True, exist_ok=True)
         (out / sp / "labels").mkdir(parents=True, exist_ok=True)
 
-    n_img = n_obj = n_drop = 0
+    n_img = n_obj = n_drop = n_dupe = 0
     for sp in ("train", "valid", "val", "test"):
         idir = Path(a.src) / sp / "images"
         if not idir.is_dir():
             continue
         for img in tqdm(sorted(p for p in idir.iterdir()
                                if p.suffix.lower() in IMG_EXT), desc=f"{a.src}:{sp}"):
+            if keep_stems is not None and img.stem not in keep_stems:
+                n_dupe += 1
+                continue
             rows = read_rows(Path(a.src) / sp / "labels" / (img.stem + ".txt"))
             rows = [(cmap[c], cx, cy, w, h) for c, cx, cy, w, h in rows
                     if cmap.get(c, -1) >= 0]
@@ -129,7 +143,8 @@ def main():
             f"path: {out.resolve()}\ntrain: train/images\nval: valid/images\n"
             f"test: test/images\nnc: {len(CANON)}\nnames: {CANON}\n")
 
-    print(f"\nwrote {n_img} images, {n_obj} objects, dropped {n_drop} unmapped objects")
+    print(f"\nwrote {n_img} images, {n_obj} objects")
+    print(f"dropped {n_drop} unmapped objects, skipped {n_dupe} duplicate images")
     print(f"-> {out}/  (data.yaml nc={len(CANON)})")
     print("\nReminder: CLAHE is now baked in. Apply the IDENTICAL clahe() call to "
           "every image at inference, or train/test distributions will not match.")

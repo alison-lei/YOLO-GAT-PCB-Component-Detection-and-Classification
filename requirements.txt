@@ -6,3 +6,7 @@ imagehash
 
 # 05_prepare_yolo.py
 opencv-python
+
+# training yolov11 model
+torch
+ultralytics
