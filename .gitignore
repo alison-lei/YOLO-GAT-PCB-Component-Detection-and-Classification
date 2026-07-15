@@ -2,3 +2,6 @@ datasets/
 .venv
 merged
 weights
+merged_new
+data
+best_old.pt

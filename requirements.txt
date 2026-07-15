@@ -9,4 +9,11 @@ opencv-python
 
 # training yolov11 model
 torch
-ultralytics
+ultralytics==8.3.0
+
+# 09_prepare_fullboards.py
+# training
+torch_geometric
+scikit-learn
+scipy
+matplotlib

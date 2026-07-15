@@ -1,0 +1,221 @@
+"""
+build_dataset.py — ONE script: Kaggle + Roboflow -> data/ with yolo/ gat/ valid/.
+
+Run from the two ORIGINAL datasets (Kaggle still has tiles+crops; Roboflow raw).
+
+Image groups (Kaggle):
+  TILE  00025__1024__1648___0   FPIC tiles      -> YOLO only
+  CROP  battery2, inductor29     1 part on black -> YOLO only (rare-class source)
+  BOARD PCBA_17, ArduinoMega_Top full boards     -> YOLO + GAT + val
+Roboflow: all full boards -> YOLO + GAT + val
+
+Buckets (board-disjoint; all rotations of a board stay together):
+  yolo  : TILE + CROP + share of BOARD/Roboflow   (fine-tune YOLO)
+  gat   : full boards YOLO never saw              (honest errors -> GAT train)
+  valid : full boards                             (final YOLO+GAT eval)
+
+Steps: classify -> md5 dedup (exact only) -> class remap -> CLAHE ->
+       rot90 (train-time buckets) -> write.
+
+Usage:
+  python utils/build_dataset.py \
+    --kaggle datasets/kaggle_dataset --kaggle-map utils/maps/kaggle.json \
+    --roboflow datasets/roboflow_dataset --roboflow-map utils/maps/roboflow.json \
+    --out data --yolo-frac 0.6 --gat-frac 0.25
+"""
+import sys
+import os
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+import argparse, hashlib, json, re
+from collections import Counter
+from pathlib import Path
+
+import cv2
+import numpy as np
+from tqdm import tqdm
+
+IMG_EXT = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
+RE_TILE = re.compile(r"^\d+__\d+__\d+___\d+$")
+CROP_CLASSES = ('battery','button','buzzer','capacitor','clock','connector','diode',
+                'display','fuse','heatsink','ic','inductor','led','pads','pins',
+                'potentiometer','relay','resistor','switch','transducer','transformer',
+                'transistor')
+RE_CROP = re.compile(r"^(" + "|".join(CROP_CLASSES) + r")\d+$")
+
+CANON = ['battery','button','buzzer','capacitor','clock','connector','diode','display',
+         'fuse','heatsink','ic','inductor','led','pads','pins','potentiometer','relay',
+         'resistor','switch','transducer','transformer','transistor','unknown']
+
+
+def group_of(stem):
+    if RE_TILE.match(stem):
+        return "TILE"
+    if RE_CROP.match(stem):
+        return "CROP"
+    return "BOARD"
+
+
+def board_id(stem):
+    """Full-board id for disjoint splitting. Tiles -> their board number."""
+    m = RE_TILE.match(stem)
+    if m:
+        return "tile_" + stem.split("__")[0]
+    return stem
+
+
+def clahe(bgr, clip=2.0, grid=8):
+    lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    l = cv2.createCLAHE(clipLimit=clip, tileGridSize=(grid, grid)).apply(l)
+    return cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
+
+
+def rot90_labels(rows):
+    return [(c, cy, 1.0 - cx, h, w) for c, cx, cy, w, h in rows]
+
+
+def read_rows(p):
+    rows = []
+    if p.exists():
+        for line in p.read_text().splitlines():
+            f = line.split()
+            if len(f) >= 5:
+                rows.append((int(float(f[0])), *map(float, f[1:5])))
+    return rows
+
+
+def write_rows(p, rows):
+    p.write_text("\n".join(f"{c} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}"
+                           for c, cx, cy, w, h in rows))
+
+
+def find_pairs(src):
+    src = Path(src); pairs = []
+    for sp in ("train", "valid", "val", "test"):
+        idir = src / sp / "images"
+        if not idir.is_dir():
+            continue
+        for img in sorted(idir.iterdir()):
+            if img.suffix.lower() in IMG_EXT:
+                pairs.append((img, src / sp / "labels" / (img.stem + ".txt")))
+    return pairs
+
+
+def load_map(path):
+    return {int(k): int(v) for k, v in json.loads(Path(path).read_text()).items()
+            if not str(k).startswith("_")}
+
+
+def main():
+    from config import CONFIG
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--kaggle", required=True); ap.add_argument("--kaggle-map", required=True)
+    ap.add_argument("--roboflow", required=True); ap.add_argument("--roboflow-map", required=True)
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--yolo-frac", type=float, default=0.60)
+    ap.add_argument("--gat-frac", type=float, default=0.25)   # valid = rest
+    ap.add_argument("--seed", type=int, default=CONFIG["seed"])
+    ap.add_argument("--no-clahe", action="store_true")
+    a = ap.parse_args()
+
+    out = Path(a.out)
+    for bucket in ("yolo", "gat", "valid"):
+        (out / bucket / "images").mkdir(parents=True, exist_ok=True)
+        (out / bucket / "labels").mkdir(parents=True, exist_ok=True)
+
+    # ---- gather every (img, lab, cmap, tag, group) ----
+    items = []
+    for src, mp, tag in [(a.kaggle, a.kaggle_map, "kaggle"),
+                         (a.roboflow, a.roboflow_map, "roboflow")]:
+        cmap = load_map(mp)
+        pairs = find_pairs(src)
+        for img, lab in pairs:
+            items.append([img, lab, cmap, tag, group_of(img.stem)])
+        g = Counter(group_of(i[0].stem) for i in items if i[3] == tag)
+        print(f"{tag}: {len(pairs)} images | {dict(g)}")
+
+    # ---- exact (md5) dedup ----
+    seen, kept, n_dupe = {}, [], 0
+    for it in tqdm(items, desc="dedup(md5)"):
+        try:
+            h = hashlib.md5(it[0].read_bytes()).hexdigest()
+        except Exception:
+            kept.append(it); continue
+        if h in seen:
+            n_dupe += 1
+        else:
+            seen[h] = 1; kept.append(it)
+    items = kept
+    print(f"exact duplicates removed: {n_dupe} -> {len(items)} unique")
+
+    # ---- board-disjoint 3-way split (full boards only) ----
+    # TILE + CROP always go to yolo. BOARD/roboflow are split across buckets.
+    board_ids = sorted({board_id(i[0].stem) for i in items if i[4] == "BOARD"})
+    rng = np.random.default_rng(a.seed)
+    rng.shuffle(board_ids)
+    n = len(board_ids)
+    n_yolo = int(round(n * a.yolo_frac)); n_gat = int(round(n * a.gat_frac))
+    board_bucket = {}
+    for b in board_ids[:n_yolo]: board_bucket[b] = "yolo"
+    for b in board_ids[n_yolo:n_yolo + n_gat]: board_bucket[b] = "gat"
+    for b in board_ids[n_yolo + n_gat:]: board_bucket[b] = "valid"
+
+    def bucket_of(img, group):
+        if group in ("TILE", "CROP"):
+            return "yolo"
+        return board_bucket.get(board_id(img.stem), "yolo")
+
+    # ---- process + write ----
+    n_img = n_obj = n_drop = 0
+    cls_hist = Counter()
+    for img, lab, cmap, tag, group in tqdm(items, desc="write"):
+        raw = read_rows(lab)
+        rows = [(cmap[c], cx, cy, w, h) for c, cx, cy, w, h in raw
+                if cmap.get(c, -1) >= 0]
+        n_drop += len(raw) - len(rows)
+        cls_hist.update(r[0] for r in rows)
+
+        bucket = bucket_of(img, group)
+        im = cv2.imread(str(img))
+        if im is None:
+            continue
+        if not a.no_clahe:
+            im = clahe(im)
+
+        variants = [("", im, rows)]
+        # rot90 only for training buckets (yolo, gat); NEVER valid
+        if bucket in ("yolo", "gat"):
+            variants.append(("_r90", np.ascontiguousarray(np.rot90(im)),
+                             rot90_labels(rows)))
+        for suf, vim, vrows in variants:
+            stem = f"{tag}_{img.stem}{suf}"
+            cv2.imwrite(str(out / bucket / "images" / f"{stem}.jpg"), vim,
+                        [cv2.IMWRITE_JPEG_QUALITY, 95])
+            write_rows(out / bucket / "labels" / f"{stem}.txt", vrows)
+            n_img += 1; n_obj += len(vrows)
+
+    # ---- yaml for YOLO (train=yolo, val=valid) ----
+    (out / "data.yaml").write_text(
+        f"path: {out.resolve()}\ntrain: yolo/images\nval: valid/images\n"
+        f"nc: {len(CANON)}\nnames: {CANON}\n")
+
+    # ---- report ----
+    for bucket in ("yolo", "gat", "valid"):
+        ni = len(list((out / bucket / "images").glob("*.jpg")))
+        print(f"  {bucket:5s}: {ni} images")
+    print(f"\nwrote {n_img} images, {n_obj} objects, dropped {n_drop} unmapped")
+    print("class histogram:")
+    for c in range(len(CANON)):
+        print(f"    {c:2d} {CANON[c]:>14s}: {cls_hist.get(c,0)}")
+    empty = [CANON[i] for i in range(len(CANON)) if cls_hist.get(i,0) == 0]
+    if empty:
+        print(f"  ! ZERO instances: {empty}")
+    print(f"\n-> {out}/  (data.yaml: train=yolo, val=valid)")
+    print("Next: train YOLO on data.yaml; build graphs from gat/ and valid/.")
+
+
+if __name__ == "__main__":
+    main()
