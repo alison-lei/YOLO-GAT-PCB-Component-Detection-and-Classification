@@ -21,6 +21,7 @@ print("DATA:", DATA, "| buckets:", [d.name for d in DATA.iterdir() if d.is_dir()
 CANON = ['battery','button','buzzer','capacitor','clock','connector','diode','display',
          'fuse','heatsink','ic','inductor','led','pads','pins','potentiometer','relay',
          'resistor','switch','transducer','transformer','transistor','unknown']
+         
 (DATA/"data.yaml").write_text(
     f"path: {DATA}\ntrain: yolo/images\nval: valid/images\nnc: {len(CANON)}\nnames: {CANON}\n")
 for sp in ("yolo","gat","valid"):

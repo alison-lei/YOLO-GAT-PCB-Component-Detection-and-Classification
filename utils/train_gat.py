@@ -18,7 +18,6 @@ Usage:
 """
 import argparse, json
 from pathlib import Path
-
 import numpy as np
 import torch
 import torch.nn as nn
@@ -31,7 +30,7 @@ from torch_geometric.loader import DataLoader
 from torch_geometric.nn import GATv2Conv
 
 EDGE_DIM = 8
-LR, BATCH = 1e-3, 8                      # fixed; tweak here if needed
+LR, BATCH = 1e-3, 8
 
 plt.rcParams.update({
     "figure.dpi": 150, "savefig.dpi": 150, "font.size": 10,
@@ -39,6 +38,7 @@ plt.rcParams.update({
     "axes.spines.top": False, "axes.spines.right": False,
     "axes.grid": True, "grid.alpha": 0.25, "grid.linewidth": 0.6,
 })
+
 C_YOLO, C_GAT = "#8d99ae", "#2b6cb0"
 C_FIX, C_BREAK = "#2a9d8f", "#d1495b"
 
