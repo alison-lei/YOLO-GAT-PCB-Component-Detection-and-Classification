@@ -17,7 +17,7 @@ best.zip
 07_inspect_class.py
 02_extract_graphs.py
 02b_graph_delaunay.py
-03_train_gat.p
+03_train_gat.py
 04_eval_and_plot.py
 05_prepare_yolo.py
 06_triage.py
