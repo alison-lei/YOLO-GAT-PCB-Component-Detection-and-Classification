@@ -22,9 +22,8 @@ Each graph dict fully describes one graph: x, edge_index, edge_attr, y, yolo_pro
 pos, xyxy, name.
 
 Usage:
-  python build_graphs.py --weights best.pt --root data --split train --out graphs/train.pt
-  python build_graphs.py --weights best.pt --root data --split valid --out graphs/valid.pt
-  python build_graphs.py --weights best.pt --root fpic_yolo  --split test  --out graphs/test.pt
+  python utils/build_graphs.py --weights best.pt --root data --split train --out graphs/train.pt
+  python utils/build_graphs.py --weights best.pt --root data --split valid --out graphs/valid.pt
 
 conf: default 0.15 raises recall into the graph (GAT rejects the extra FPs).
 Use the SAME conf for train/valid/test or you inject a distribution shift.

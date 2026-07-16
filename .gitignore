@@ -15,3 +15,21 @@ best.zip
 01_audit.py
 04_boards.py
 07_inspect_class.py
+02_extract_graphs.py
+02b_graph_delaunay.py
+03_train_gat.p
+04_eval_and_plot.py
+05_prepare_yolo.py
+06_triage.py
+09_prepare_fullboards.py
+11_build_graphs.py
+12_split3.py
+
+# results
+graphs23
+graphs4
+results0
+results1
+results2
+results3
+results4

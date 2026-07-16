@@ -1,5 +1,5 @@
 """
-build_dataset.py — ONE script: Kaggle + Roboflow -> data/ with yolo/ gat/ valid/.
+build_dataset.py — ONE script: Kaggle + Roboflow -> data/ with yolo/ train/ valid/.
 
 Run from the two ORIGINAL datasets (Kaggle still has tiles+crops; Roboflow raw).
 
@@ -11,7 +11,7 @@ Roboflow: all full boards -> YOLO + GAT + val
 
 Buckets (board-disjoint; all rotations of a board stay together):
   yolo  : TILE + CROP + share of BOARD/Roboflow   (fine-tune YOLO)
-  gat   : full boards YOLO never saw              (honest errors -> GAT train)
+  train   : full boards YOLO never saw              (honest errors -> GAT train)
   valid : full boards                             (final YOLO+GAT eval)
 
 Steps: classify -> md5 dedup (exact only) -> class remap -> CLAHE ->
@@ -21,7 +21,7 @@ Usage:
   python utils/build_dataset.py \
     --kaggle datasets/kaggle_dataset --kaggle-map utils/maps/kaggle.json \
     --roboflow datasets/roboflow_dataset --roboflow-map utils/maps/roboflow.json \
-    --out data --yolo-frac 0.6 --gat-frac 0.25
+    --out data --yolo-frac 0.6 --train-frac 0.25
 """
 import sys
 import os
@@ -109,20 +109,18 @@ def load_map(path):
 
 
 def main():
-    from config import CONFIG
-
     ap = argparse.ArgumentParser()
     ap.add_argument("--kaggle", required=True); ap.add_argument("--kaggle-map", required=True)
     ap.add_argument("--roboflow", required=True); ap.add_argument("--roboflow-map", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--yolo-frac", type=float, default=0.60)
-    ap.add_argument("--gat-frac", type=float, default=0.25)   # valid = rest
-    ap.add_argument("--seed", type=int, default=CONFIG["seed"])
+    ap.add_argument("--train-frac", type=float, default=0.25)   # valid = rest
+    ap.add_argument("--seed", type=int, default=50)
     ap.add_argument("--no-clahe", action="store_true")
     a = ap.parse_args()
 
     out = Path(a.out)
-    for bucket in ("yolo", "gat", "valid"):
+    for bucket in ("yolo", "train", "valid"):
         (out / bucket / "images").mkdir(parents=True, exist_ok=True)
         (out / bucket / "labels").mkdir(parents=True, exist_ok=True)
 
@@ -157,11 +155,11 @@ def main():
     rng = np.random.default_rng(a.seed)
     rng.shuffle(board_ids)
     n = len(board_ids)
-    n_yolo = int(round(n * a.yolo_frac)); n_gat = int(round(n * a.gat_frac))
+    n_yolo = int(round(n * a.yolo_frac)); n_train = int(round(n * a.train_frac))
     board_bucket = {}
     for b in board_ids[:n_yolo]: board_bucket[b] = "yolo"
-    for b in board_ids[n_yolo:n_yolo + n_gat]: board_bucket[b] = "gat"
-    for b in board_ids[n_yolo + n_gat:]: board_bucket[b] = "valid"
+    for b in board_ids[n_yolo:n_yolo + n_train]: board_bucket[b] = "train"
+    for b in board_ids[n_yolo + n_train:]: board_bucket[b] = "valid"
 
     def bucket_of(img, group):
         if group in ("TILE", "CROP"):
@@ -186,8 +184,8 @@ def main():
             im = clahe(im)
 
         variants = [("", im, rows)]
-        # rot90 only for training buckets (yolo, gat); NEVER valid
-        if bucket in ("yolo", "gat"):
+        # rot90 only for training buckets (yolo, train); NEVER valid
+        if bucket in ("yolo", "train"):
             variants.append(("_r90", np.ascontiguousarray(np.rot90(im)),
                              rot90_labels(rows)))
         for suf, vim, vrows in variants:
@@ -203,7 +201,7 @@ def main():
         f"nc: {len(CANON)}\nnames: {CANON}\n")
 
     # ---- report ----
-    for bucket in ("yolo", "gat", "valid"):
+    for bucket in ("yolo", "train", "valid"):
         ni = len(list((out / bucket / "images").glob("*.jpg")))
         print(f"  {bucket:5s}: {ni} images")
     print(f"\nwrote {n_img} images, {n_obj} objects, dropped {n_drop} unmapped")
@@ -213,8 +211,6 @@ def main():
     empty = [CANON[i] for i in range(len(CANON)) if cls_hist.get(i,0) == 0]
     if empty:
         print(f"  ! ZERO instances: {empty}")
-    print(f"\n-> {out}/  (data.yaml: train=yolo, val=valid)")
-    print("Next: train YOLO on data.yaml; build graphs from gat/ and valid/.")
 
 
 if __name__ == "__main__":
