@@ -5,3 +5,13 @@ weights
 merged_new
 data
 best_old.pt
+best.pt
+
+graphs_old
+results_old/
+best.zip
+
+# old scripts
+01_audit.py
+04_boards.py
+07_inspect_class.py

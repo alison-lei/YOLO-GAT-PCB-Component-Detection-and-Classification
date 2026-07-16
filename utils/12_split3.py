@@ -53,7 +53,7 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--yolo-frac", type=float, default=0.60)
     ap.add_argument("--gat-frac", type=float, default=0.25)   # val = 1 - yolo - gat
-    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--seed", type=int, default=50)
     ap.add_argument("--copy", action="store_true", help="copy instead of symlink")
     a = ap.parse_args()
 

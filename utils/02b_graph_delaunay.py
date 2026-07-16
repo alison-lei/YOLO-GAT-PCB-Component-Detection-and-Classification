@@ -137,7 +137,7 @@ def build_graph_delaunay(xyxy, probs, y, W, H, n_anchor=2, anchor_pct=75):
 
 # ------------------------------------------------------------------ quick test
 if __name__ == "__main__":
-    torch.manual_seed(0)
+    torch.manual_seed(50)
     N, C = 30, 22
     xyxy = torch.rand(N, 4) * 1000
     xyxy[:, 2:] = xyxy[:, :2] + torch.rand(N, 2) * 60 + 10

@@ -73,7 +73,7 @@ def to_pyg(path):
     return out, blob["nc"]
 
 
-def add_noise(ds, nc, frac, seed=0):
+def add_noise(ds, nc, frac, seed=50):
     """Corrupt `frac` of foreground nodes to a random wrong class so train
     inputs are as error-prone as YOLO really is on unseen boards."""
     rng = np.random.default_rng(seed)

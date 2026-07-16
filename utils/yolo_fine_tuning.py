@@ -1,0 +1,63 @@
+# ── FINAL YOLO TRAINING — one cell ─────────────────────────────────
+import os, torch
+os.environ["WANDB_DISABLED"] = "true"
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
+# 1. PINNED install + kill every logger callback that can crash
+!pip install -q ultralytics==8.3.0
+!pip uninstall -y wandb ray mlflow clearml comet_ml dvclive -q 2>/dev/null
+!yolo settings wandb=False mlflow=False clearml=False comet=False dvc=False raytune=False 2>/dev/null
+print("GPU:", torch.cuda.get_device_name(0))
+
+# 2. copy dataset to WRITABLE storage
+import glob, shutil
+from pathlib import Path
+SRC = Path(glob.glob("/kaggle/input/**/data.yaml", recursive=True)[0]).parent
+DATA = Path("/kaggle/working/data")
+if not DATA.exists():
+    shutil.copytree(SRC, DATA)
+print("DATA:", DATA, "| buckets:", [d.name for d in DATA.iterdir() if d.is_dir()])
+
+CANON = ['battery','button','buzzer','capacitor','clock','connector','diode','display',
+         'fuse','heatsink','ic','inductor','led','pads','pins','potentiometer','relay',
+         'resistor','switch','transducer','transformer','transistor','unknown']
+(DATA/"data.yaml").write_text(
+    f"path: {DATA}\ntrain: yolo/images\nval: valid/images\nnc: {len(CANON)}\nnames: {CANON}\n")
+for sp in ("yolo","gat","valid"):
+    n = len(list((DATA/sp/"images").glob("*"))) if (DATA/sp/"images").is_dir() else 0
+    print(f"  {sp}: {n} images")
+
+# 3. train — yolo11m for better recall
+# !yolo detect train model=yolo11m.pt data={DATA}/data.yaml \
+#     epochs=150 imgsz=1024 batch=4 patience=40 device=0 workers=4 cos_lr=True \
+#     hsv_h=0.05 hsv_s=0.7 hsv_v=0.3 degrees=10 translate=0.1 scale=0.5 perspective=0.0005 \
+#     fliplr=0.5 flipud=0.5 mosaic=1.0 close_mosaic=15 \
+#     project=/kaggle/working/runs name=pcb plots=True
+
+
+
+# 4. report recall — caps your GAT
+found_files = glob.glob("/kaggle/input/**/best_fixed.pt", recursive=True)
+print(found_files[0])
+BEST = Path(found_files[0])
+if BEST.exists():
+    !yolo detect val model={BEST} data={DATA}/data.yaml conf=0.15 \
+        project=/kaggle/working/runs name=pcb_val
+else:
+    print("best.pt not found")
+
+
+
+import shutil
+from IPython.display import FileLink
+
+# 1. Define the directory containing your validation plots
+dir_to_zip = '/kaggle/working/runs/pcb_val'
+output_zip = '/kaggle/working/pcb_val_results'  # Will create pcb_val_results.zip
+
+# 2. Compress the folder
+shutil.make_archive(output_zip, 'zip', dir_to_zip)
+print("Folder zipped")
+
+# 3. Generate a direct download link in your notebook
+FileLink('pcb_val_results.zip')
