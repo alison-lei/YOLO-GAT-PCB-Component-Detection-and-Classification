@@ -1,33 +1,25 @@
 """
-build_graphs.py — One self-contained script that turns a YOLO dataset split into
-GAT graphs. Merges the three former scripts:
-    02_extract_graphs.py  (raw_detect / load_gt / assign_labels)
-    02b_graph_delaunay.py (Delaunay + anchor edge construction, rotation aug)
-    11_build_graphs.py    (the per-split driver)
+build_graphs.py runs on a single split of data (train, valid, or test)
+It takes the predicted probability vectors from frozen YOLO and feeds it into the nodes of the graphs
 
-Graphs use DELAUNAY + anchor edges (NOT kNN).
+Graphs use Delaunay + anchor edges
 
-Pipeline per image:
-  1. run frozen YOLO, keep the FULL class-probability vector per detection
-     (Ultralytics' Results object throws away everything but the top-1 class,
-     which is exactly what the GAT needs).
-  2. IoU-match each detection to ground truth -> node label
-     (unmatched detection = background class `nc`, i.e. a false positive the
-     GAT can learn to reject).
+One graph created per image:
+  1. run frozen YOLO, keep the full class-probability vector for each detected component, GAT learns from the uncertainty provided by YOLO
+  2. IoU-match each detected node to ground truth -> unmatched detection is assigned to background class, index = nc)
   3. build a Delaunay + anchor-edge graph.
-  4. (train only, with --augment) also emit 90/180/270 rotations for 4x data.
 
-Output is a .pt file holding {graphs: [dict,...], nc: int, k: "delaunay+anchor"}.
-Each graph dict fully describes one graph: x, edge_index, edge_attr, y, yolo_probs,
-pos, xyxy, name.
+Output is a .pt file holding the graphs and the number of instances of false positives -> {graphs: [dict,...], nc: int, k: "delaunay+anchor"}.
+Each graph dict fully describes one graph: x, edge_index, edge_attr, y, yolo_probs, pos, xyxy, name.
 
-Usage:
+Commands:
   python utils/build_graphs.py --weights best.pt --root data --split train --out graphs/train.pt
   python utils/build_graphs.py --weights best.pt --root data --split valid --out graphs/valid.pt
 
-conf: default 0.15 raises recall into the graph (GAT rejects the extra FPs).
-Use the SAME conf for train/valid/test or you inject a distribution shift.
+conf: default 0.15 raises recall into the graph (GAT then learns to rejects the extra false positives)
+
 """
+
 import argparse
 from pathlib import Path
 
@@ -40,22 +32,24 @@ from tqdm import tqdm
 IMG_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 
 
-# ============================================================ YOLO detection
+# Run the frozen YOLO weights. Don't use the single prediction from Ultralytics
+# Run the forward function again to get the full probability vector
 @torch.no_grad()
 def raw_detect(model, img_bgr, device, imgsz=1024, conf_th=0.15, iou_th=0.5):
-    """Return (boxes_xyxy [N,4] in original px, probs [N,NC]) — full prob vector."""
+    # Return (boxes_xyxy [N,4] in original px, probs [N,NC]) which is full probability vector
     from ultralytics.data.augment import LetterBox
     from ultralytics.utils import ops
 
     h0, w0 = img_bgr.shape[:2]
     im = LetterBox((imgsz, imgsz), auto=False)(image=img_bgr)
-    im = np.ascontiguousarray(im[..., ::-1].transpose(2, 0, 1))   # BGR->RGB, CHW
+    # Convert BGR to RGB, CHW
+    im = np.ascontiguousarray(im[..., ::-1].transpose(2, 0, 1))
     t = torch.from_numpy(im).float().div(255).unsqueeze(0).to(device)
 
     out = model.model(t)
-    p = out[0] if isinstance(out, (list, tuple)) else out          # (1, 4+NC, A)
-    p = p[0].transpose(0, 1)                                        # (A, 4+NC)
-    boxes_xywh, scores = p[:, :4], p[:, 4:]                         # already sigmoid'd
+    p = out[0] if isinstance(out, (list, tuple)) else out
+    p = p[0].transpose(0, 1)
+    boxes_xywh, scores = p[:, :4], p[:, 4:]
     best, cls = scores.max(1)
 
     keep = best > conf_th
@@ -70,8 +64,8 @@ def raw_detect(model, img_bgr, device, imgsz=1024, conf_th=0.15, iou_th=0.5):
     return xyxy.cpu(), scores.cpu()
 
 
+# Reads the YOLO label files to determine the ground truth bounding boxes and class (boxes_xyxy [M,4] px, cls [M])
 def load_gt(lab_path, w, h):
-    """YOLO txt -> (boxes_xyxy [M,4] px, cls [M])."""
     if not lab_path.exists():
         return torch.zeros(0, 4), torch.zeros(0, dtype=torch.long)
     b, c = [], []
@@ -86,12 +80,15 @@ def load_gt(lab_path, w, h):
     return torch.tensor(b, dtype=torch.float), torch.tensor(c, dtype=torch.long)
 
 
+# Greedy IoU matching. Each detected node is compared to the ground truth and whether there is actually a node there
+# Keep it as a node if IoU is over the threshold of 0.5
+# If it is predicted as a component/node but does not exist in ground truth then it is labeled as background (class index is nc)
+# Lets GAT learn false positive rejection
 def assign_labels(pred_xyxy, gt_xyxy, gt_cls, nc, iou_th=0.5):
-    """Greedy IoU matching. Unmatched prediction -> background class `nc`."""
     y = torch.full((len(pred_xyxy),), nc, dtype=torch.long)
     if len(pred_xyxy) == 0 or len(gt_xyxy) == 0:
         return y
-    iou = torchvision.ops.box_iou(pred_xyxy, gt_xyxy)              # [N, M]
+    iou = torchvision.ops.box_iou(pred_xyxy, gt_xyxy)
     taken = set()
     order = iou.max(1).values.argsort(descending=True)
     for i in order.tolist():
@@ -102,26 +99,19 @@ def assign_labels(pred_xyxy, gt_xyxy, gt_cls, nc, iou_th=0.5):
     return y
 
 
-# ============================================================ graph building
-def rotate_boxes(xyxy, W, H, k):
-    """Rotate boxes by k*90 deg CCW about the image centre. Labels unchanged."""
-    x1, y1, x2, y2 = xyxy[:, 0], xyxy[:, 1], xyxy[:, 2], xyxy[:, 3]
-    for _ in range(k % 4):
-        nx1, ny1 = y1, W - x2
-        nx2, ny2 = y2, W - x1
-        x1, y1, x2, y2 = nx1, ny1, nx2, ny2
-        W, H = H, W
-    return torch.stack([x1, y1, x2, y2], 1), W, H
-
-
+# build Delaunay graph with also anchor to the nearest 2 largest components
 def build_graph_delaunay(xyxy, probs, y, W, H, n_anchor=2, anchor_pct=75):
     """
-    Node feats  x  : [N, C+7]  = [C probs | log w | log h | log aspect | log area | cx | cy | conf]
-    Edge feats  ea : [E, 8]    = [dx, dy, dist, sin, cos, log wratio, log hratio, log aratio]
-    Edges: Delaunay local adjacency (~6/node) + each node -> its n_anchor nearest LARGE components.
+    Node features  x  : [N, C+7]  = [C probs | log w | log h | log aspect | log area | cx | cy | conf]
+                                    C probs are the YOLO's predicted probability distribution
+                                    conf determines recall, lower conf means higehr recall/more components are detected, but accuracy decreases.
+                                    GAT's purpose is to increase accuracy, can only do so if YOLO actually detects a node and includes it in graph
+
+    Edge features  ea : [E, 8]    = [dx, dy, dist, sin, cos, log wratio, log hratio, log aratio]
+    Edges: Delaunay local adjacency (~6/node) + each node -> its n_anchor nearest large components.
     """
     eps = 1e-6
-    s = float(max(W, H))                         # isotropic scale -> metric geometry
+    s = float(max(W, H))
 
     cx = (xyxy[:, 0] + xyxy[:, 2]) / 2 / s
     cy = (xyxy[:, 1] + xyxy[:, 3]) / 2 / s
@@ -142,7 +132,8 @@ def build_graph_delaunay(xyxy, probs, y, W, H, n_anchor=2, anchor_pct=75):
     N = len(pos)
     edges = set()
 
-    # (1) Delaunay local adjacency (needs >= 3 non-collinear points)
+    # Types of edges
+    # 1. Delaunay local adjacency (needs >= 3 non-collinear points). Generally shows the connectino between components
     if N >= 3:
         try:
             tri = Delaunay(pos.numpy())
@@ -150,11 +141,13 @@ def build_graph_delaunay(xyxy, probs, y, W, H, n_anchor=2, anchor_pct=75):
                 for a in range(3):
                     for b in range(a + 1, 3):
                         i, j = int(simplex[a]), int(simplex[b])
-                        edges.add((i, j)); edges.add((j, i))
+                        edges.add((i, j))
+                        edges.add((j, i))
         except Exception:
-            pass                                  # degenerate (collinear) board
+            pass
 
-    # (2) anchor edges: every node -> its n_anchor nearest LARGE components
+    # 2. anchor edges: every node -> its n_anchor nearest large components (like ic)
+    # This captures long range relationships
     if N >= 2:
         big = torch.where(area >= np.percentile(area.numpy(), anchor_pct))[0]
         if len(big) > 0:
@@ -165,17 +158,20 @@ def build_graph_delaunay(xyxy, probs, y, W, H, n_anchor=2, anchor_pct=75):
                     j = int(big[o])
                     if j == i:
                         continue
-                    edges.add((i, j)); edges.add((j, i))
+                    edges.add((i, j))
+                    edges.add((j, i))
                     added += 1
                     if added >= n_anchor:
                         break
 
     # fallback: tiny board with no edges -> nearest neighbour
     if not edges and N >= 2:
-        d = torch.cdist(pos, pos); d.fill_diagonal_(float("inf"))
+        d = torch.cdist(pos, pos)
+        d.fill_diagonal_(float("inf"))
         for i in range(N):
             j = int(d[i].argmin())
-            edges.add((i, j)); edges.add((j, i))
+            edges.add((i, j))
+            edges.add((j, i))
 
     ei = (torch.tensor(sorted(edges), dtype=torch.long).t().contiguous()
           if edges else torch.zeros(2, 0, dtype=torch.long))
@@ -197,16 +193,7 @@ def build_graph_delaunay(xyxy, probs, y, W, H, n_anchor=2, anchor_pct=75):
                 yolo_probs=probs, pos=pos, xyxy=xyxy)
 
 
-def build_graph_augmented(xyxy, probs, y, W, H, rotations=(0, 1, 2, 3), **kw):
-    """One graph per 90-deg rotation. Same probs/labels; geometry rotated."""
-    outs = []
-    for k in rotations:
-        rb, rW, rH = rotate_boxes(xyxy, W, H, k)
-        outs.append(build_graph_delaunay(rb, probs, y, rW, rH, **kw))
-    return outs
 
-
-# ==================================================================== driver
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--weights", required=True)
@@ -215,8 +202,6 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--imgsz", type=int, default=1024)
     ap.add_argument("--conf", type=float, default=0.15)
-    ap.add_argument("--augment", action="store_true",
-                    help="emit 4 rotations per graph (train only)")
     ap.add_argument("--min-nodes", type=int, default=3)
     a = ap.parse_args()
 
@@ -224,7 +209,8 @@ def main():
     from ultralytics import YOLO
 
     dev = "cuda" if torch.cuda.is_available() else "cpu"
-    model = YOLO(a.weights); model.model.to(dev).eval()
+    model = YOLO(a.weights)
+    model.model.to(dev).eval()
     nc = int(model.model.nc)
     print(f"device={dev}  nc={nc}  conf={a.conf}  imgsz={a.imgsz}  augment={a.augment}")
 
@@ -237,16 +223,18 @@ def main():
     for p in tqdm(imgs, desc=f"build[{a.split}]"):
         im = cv2.imread(str(p))
         if im is None:
-            skipped += 1; continue
+            skipped += 1
+            continue
         H, W = im.shape[:2]
         xyxy, probs = raw_detect(model, im, dev, a.imgsz, a.conf)
+        # check if there are too little components on each PCB board, if so then remove them
         if len(xyxy) < a.min_nodes:
-            skipped += 1; continue
+            skipped += 1
+            continue
         gt_b, gt_c = load_gt(ldir / (p.stem + ".txt"), W, H)
         y = assign_labels(xyxy, gt_b, gt_c, nc)
 
-        outs = (build_graph_augmented(xyxy, probs, y, W, H) if a.augment
-                else [build_graph_delaunay(xyxy, probs, y, W, H)])
+        outs = [build_graph_delaunay(xyxy, probs, y, W, H)]
         for k, g in enumerate(outs):
             g["name"] = f"{p.stem}_r{k}" if a.augment else p.stem
             graphs.append(g)
