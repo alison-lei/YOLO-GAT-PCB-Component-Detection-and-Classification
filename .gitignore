@@ -5,7 +5,6 @@ weights
 merged_new
 data
 best_old.pt
-best.pt
 
 graphs_old
 results_old/
@@ -35,3 +34,7 @@ results3
 results4
 
 pcb_val_results_15
+label_check
+check_labels.py
+data.zip
+yolo11m.pt

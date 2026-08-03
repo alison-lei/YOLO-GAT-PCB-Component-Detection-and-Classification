@@ -21,9 +21,13 @@ Steps:
 classify -> md5 deduplication (remove perfect duplicates only) -> remap classes to follow cannonical format in utils/maps/kaggle.json -> 
 CLAHE -> rot90 (train-time buckets) -> write.
 
+NOTE: Roboflow labels are exported as instance-segmentation polygons (class + N (x,y)
+vertex pairs, N>=5), not plain YOLO boxes (class + cx cy w h). read_rows() below
+auto-detects and converts polygons to their tight axis-aligned bounding box. Kaggle's
+plain 5-field box labels pass through unchanged.
+
 Command:
   python utils/build_dataset.py --kaggle datasets/kaggle_dataset --kaggle-map utils/maps/kaggle.json --roboflow datasets/roboflow_dataset --roboflow-map utils/maps/roboflow.json --out data --yolo-frac 0.6 --train-frac 0.25
-
 """
 
 import sys
@@ -83,12 +87,31 @@ def rot90_labels(rows):
 
 
 def read_rows(p):
+    """
+    Reads a YOLO-style label file. Handles two formats transparently:
+      - plain box: class cx cy w h                (5 fields total, Kaggle)
+      - polygon:   class x1 y1 x2 y2 ... xn yn     (>5 fields, Roboflow segmentation export)
+    Polygons are converted to their tight axis-aligned bounding box (cx, cy, w, h),
+    all still normalized 0-1 since Roboflow's polygon coords are normalized too.
+    """
     rows = []
     if p.exists():
         for line in p.read_text().splitlines():
             f = line.split()
-            if len(f) >= 5:
-                rows.append((int(float(f[0])), *map(float, f[1:5])))
+            if len(f) < 5:
+                continue
+            c = int(float(f[0]))
+            coords = list(map(float, f[1:]))
+            if len(coords) == 4:
+                cx, cy, w, h = coords
+            else:
+                xs = coords[0::2]
+                ys = coords[1::2]
+                x1, x2 = min(xs), max(xs)
+                y1, y2 = min(ys), max(ys)
+                cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+                w, h = x2 - x1, y2 - y1
+            rows.append((c, cx, cy, w, h))
     return rows
 
 
@@ -191,7 +214,8 @@ def main():
 
         if group in ("TILE", "CROP"):
             bucket = "yolo"
-        bucket = board_bucket.get(board_id(img.stem), "yolo")
+        else:
+            bucket = board_bucket.get(board_id(img.stem), "yolo")
 
         im = cv2.imread(str(img))
         if im is None:
