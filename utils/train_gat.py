@@ -2,21 +2,26 @@
 train_gat.py Edge-conditioned GAT refines YOLO's predictions using graph context.
 
 The head is a gated residual over YOLO: it starts from the logit of YOLO's own class vector and adjusts it using the graph
-GAT ameilorates the detector's prediction rather than replacing it
+GAT ameliorates the detector's prediction rather than replacing it
 
 Outputs:
   <tag>_confusion.png     node-classification confusion matrix (on valid data)
   <tag>_curves.png        train vs valid accuracy and loss graphs
   <tag>_yolo_vs_gat.png   comparison between YOLO and YOLO+GAT predictions to visually see if GAT improves YOLO's predicitons
-  <tag>_best.pt           best checkpoint (highest validation accuracy)
+  <tag>_best.pt           best checkpoint (selected via --select_metric)
+
+Loss: alpha-balanced focal loss (--focal_loss, default on). Alpha = inverse-frequency
+class weights (same values previously used for weighted cross-entropy); gamma controls
+how strongly easy/confident predictions are downweighted. Set --nofocal_loss to fall
+back to plain weighted cross-entropy.
 
 Command:
-  python utils/train_gat.py --train graphs/train.pt --val graphs/valid.pt --names data/data.yaml --epochs 200 --tag gat_edge
-
+  python utils/train_gat.py --train=graphs/train.pt --val=graphs/valid.pt --names=data/data.yaml --epochs=200 --tag=gat_edge
 """
 
-import argparse, json
+import json
 from pathlib import Path
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -28,9 +33,47 @@ from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
 from torch_geometric.nn import GATv2Conv
 
-# initial testing hyperparameters
-EDGE_DIM = 8
-LR, BATCH = 1e-3, 8
+from absl import app
+from absl import flags
+
+import random
+random.seed(0)
+np.random.seed(0)
+torch.manual_seed(0)
+torch.cuda.manual_seed_all(0)
+
+FLAGS = flags.FLAGS
+
+# --- data / io ---
+flags.DEFINE_string("train", None, "Path to train graphs .pt file (from build_graphs.py)")
+flags.DEFINE_string("val", None, "Path to val graphs .pt file (from build_graphs.py)")
+flags.DEFINE_string("names", None, "YOLO data.yaml for class names in plots")
+flags.DEFINE_string("tag", "gat_edge", "Tag prefix for output files")
+flags.DEFINE_string("out", "final_results", "Output directory")
+
+# --- training loop ---
+flags.DEFINE_integer("epochs", 200, "Number of training epochs")
+flags.DEFINE_integer("batch_size", 8, "Batch size")
+flags.DEFINE_float("lr", 1e-3, "AdamW learning rate")
+flags.DEFINE_float("weight_decay", 1e-4, "AdamW weight decay")
+flags.DEFINE_float("grad_clip", 5.0, "Gradient clipping max norm")
+flags.DEFINE_integer("patience", 0, "Early-stop patience in epochs, 0 disables early stopping")
+flags.DEFINE_enum("select_metric", "f1", ["acc", "f1"],
+                   "Metric used to pick the best checkpoint. f1 (macro) is less dominated "
+                   "by majority classes than raw acc given the resistor/capacitor imbalance.")
+
+# --- model architecture ---
+flags.DEFINE_integer("hidden", 128, "Hidden dimension")
+flags.DEFINE_integer("heads", 4, "GATv2Conv attention heads (must divide hidden evenly)")
+flags.DEFINE_integer("layers", 1, "Number of GATv2Conv layers (>1 risks oversmoothing)")
+flags.DEFINE_float("dropout", 0.2, "Dropout rate")
+
+# --- loss ---
+flags.DEFINE_boolean("focal_loss", True, "Use alpha-balanced focal loss instead of weighted CE")
+flags.DEFINE_float("focal_gamma", 2.0, "Focal loss focusing parameter (higher = more focus on hard examples)")
+
+flags.mark_flag_as_required("train")
+flags.mark_flag_as_required("val")
 
 plt.rcParams.update({
     "figure.dpi": 150, "savefig.dpi": 150, "font.size": 10, "axes.titlesize": 12, "axes.labelsize": 11,
@@ -43,10 +86,8 @@ C_FIX, C_BREAK = "#2a9d8f", "#d1495b"
 
 
 # GAT model
-# have not yet tuned all hyperparameters
 class PCBGAT(nn.Module):
-    # default is 1 GATv2Conv layer as do not want to combine nodes with neighbors excessively, lose information
-    def __init__(self, in_dim, nc, hidden=128, heads=4, layers=1, drop=0.2):
+    def __init__(self, in_dim, nc, edge_dim, hidden=128, heads=4, layers=1, drop=0.2):
         super().__init__()
         self.nc, self.n_out, self.drop = nc, nc + 1, drop
         # send input dimension to hidden dimension, work with abstraction
@@ -54,12 +95,12 @@ class PCBGAT(nn.Module):
         self.inp = nn.Sequential(nn.Linear(in_dim, hidden), nn.ELU())
         self.convs, self.norms = nn.ModuleList(), nn.ModuleList()
         for _ in range(layers):
-            # dynamic attention mechanism
-            # computes unique learned weight for each neighbor
-            self.convs.append(GATv2Conv(hidden, hidden // heads, heads=heads, concat=True, edge_dim=EDGE_DIM, dropout=drop))
+            self.convs.append(GATv2Conv(hidden, hidden // heads, heads=heads, concat=True,
+                                         edge_dim=edge_dim, dropout=drop))
             self.norms.append(nn.LayerNorm(hidden))
         self.delta = nn.Linear(hidden, self.n_out)
         self.gate = nn.Linear(hidden, 1)
+        nn.init.constant_(self.gate.bias, 1.0)  # start gate at sigmoid(1)=0.73, more willing to correct
 
     def forward(self, d):
         h = self.inp(d.x)
@@ -103,26 +144,69 @@ def read_names(path, nc):
     return (names or [f"class_{i}" for i in range(nc)]) + ["background"]
 
 
+def focal_loss(logits, targets, alpha, gamma, reduction="mean"):
+    """Alpha-balanced focal loss. alpha is a per-class weight tensor (same values
+    previously used for weighted cross-entropy); gamma downweights already-easy,
+    high-confidence predictions so the loss focuses on hard/rare cases."""
+    ce = F.cross_entropy(logits, targets, reduction="none")
+    pt = torch.exp(-ce)
+    alpha_t = alpha[targets]
+    loss = alpha_t * (1 - pt) ** gamma * ce
+    if reduction == "mean":
+        return loss.mean()
+    if reduction == "sum":
+        return loss.sum()
+    return loss
+
+
+def compute_loss(logits, y, w):
+    if FLAGS.focal_loss:
+        return focal_loss(logits, y, w, FLAGS.focal_gamma)
+    return F.cross_entropy(logits, y, weight=w)
+
+
+# thresholds for the diagnostic metrics
+MIN_SUPPORT = 50            # classes below this are excluded from the "fair" macro-F1
+DOMINANT_CLASSES = {"resistor", "capacitor"}  # excluded from the "non-dominant accuracy" metric
+
+
 # Evaluate the model on valid data
 @torch.no_grad()
-def evaluate(model, loader, dev, nc, w):
+def evaluate(model, loader, dev, nc, w, names=None):
     model.eval()
     Y, P, B, loss, n = [], [], [], 0.0, 0
     for b in loader:
         b = b.to(dev)
         logits = model(b)
-        loss += float(F.cross_entropy(logits, b.y, weight=w, reduction="sum"))
+        loss += float(compute_loss(logits, b.y, w).item() * len(b.y))
         n += len(b.y)
         Y.append(b.y.cpu())
         P.append(logits.argmax(1).cpu())
         B.append(b.yolo_probs.argmax(1).cpu())
     Y, P, B = (torch.cat(t).numpy() for t in (Y, P, B))
     fg = Y < nc
+
+    # support-filtered macro-F1: drop classes with too few instances to be learnable
+    support = np.bincount(Y[fg], minlength=nc)
+    learnable = [c for c in range(nc) if support[c] >= MIN_SUPPORT]
+    f1_filtered = float(f1_score(Y[fg], P[fg], labels=learnable, average="macro", zero_division=0))
+
+    # accuracy excluding the dominant resistor/capacitor classes:
+    # shows whether the accuracy drop is concentrated in those two big classes
     m = dict(loss=loss / max(1, n),
              acc=float((P[fg] == Y[fg]).mean()),
              f1=float(f1_score(Y[fg], P[fg], average="macro", zero_division=0)),
+             f1_filtered=f1_filtered,
              yolo_acc=float((B[fg] == Y[fg]).mean()),
              yolo_f1=float(f1_score(Y[fg], B[fg], average="macro", zero_division=0)))
+
+    if names is not None:
+        dom_ids = {i for i, nm in enumerate(names[:nc]) if nm in DOMINANT_CLASSES}
+        nondom = np.array([i for i in range(len(Y)) if fg[i] and Y[i] not in dom_ids])
+        if len(nondom) > 0:
+            m["acc_nondominant"] = float((P[nondom] == Y[nondom]).mean())
+            m["yolo_acc_nondominant"] = float((B[nondom] == Y[nondom]).mean())
+
     return m, (Y, P, B)
 
 
@@ -198,7 +282,7 @@ def plot_curves(hist, best_ep, out):
     a2.plot(ep, hist["train_loss"], color=C_YOLO, lw=2, label="train")
     a2.plot(ep, hist["val_loss"], color=C_GAT, lw=2, label="validation")
     a2.axvline(best_ep, color=C_FIX, ls="--", lw=1.3, label=f"best epoch ({best_ep})")
-    a2.set_title("Weighted cross-entropy loss", fontweight="bold")
+    a2.set_title("Loss" + (" (focal)" if FLAGS.focal_loss else " (weighted CE)"), fontweight="bold")
     a2.set_xlabel("epoch")
     a2.set_ylabel("loss")
     a2.legend(frameon=False)
@@ -263,47 +347,44 @@ def plot_yolo_vs_gat(y_true, gat_pred, yolo_pred, names, nc, out):
     print(f"[plot] yolo-vs-gat -> {out}")
 
 
-
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--train", required=True)
-    ap.add_argument("--val", required=True)
-    ap.add_argument("--names", help="YOLO data.yaml for class names in plots")
-    ap.add_argument("--epochs", type=int, default=200)
-    ap.add_argument("--tag", default="gat_edge")
-    ap.add_argument("--out", default="results")
-    a = ap.parse_args()
-
-    outdir = Path(a.out)
+def main(argv):
+    del argv
+    outdir = Path(FLAGS.out)
     outdir.mkdir(parents=True, exist_ok=True)
     dev = "cuda" if torch.cuda.is_available() else "cpu"
 
-    tr, nc = to_pyg(a.train)
-    va, _ = to_pyg(a.val)
-    names = read_names(a.names, nc)
+    tr, nc = to_pyg(FLAGS.train)
+    va, _ = to_pyg(FLAGS.val)
+    names = read_names(FLAGS.names, nc)
 
-    ltr = DataLoader(tr, batch_size=BATCH, shuffle=True)
-    ltr_eval = DataLoader(tr, batch_size=BATCH)
-    lva = DataLoader(va, batch_size=BATCH)
+    ltr = DataLoader(tr, batch_size=FLAGS.batch_size, shuffle=True)
+    ltr_eval = DataLoader(tr, batch_size=FLAGS.batch_size)
+    lva = DataLoader(va, batch_size=FLAGS.batch_size)
     w = class_weights(tr, nc + 1).to(dev)
 
-    model = PCBGAT(tr[0].x.shape[1], nc).to(dev)
-    print(f"[{a.tag}] {len(tr)}/{len(va)} graphs | nc={nc} | "f"params {sum(p.numel() for p in model.parameters()):,}")
+    edge_dim = tr[0].edge_attr.shape[1]  # auto-detected, matches whatever build_graphs.py produced
+    model = PCBGAT(tr[0].x.shape[1], nc, edge_dim, hidden=FLAGS.hidden, heads=FLAGS.heads,
+                   layers=FLAGS.layers, drop=FLAGS.dropout).to(dev)
+    loss_name = f"focal(gamma={FLAGS.focal_gamma})" if FLAGS.focal_loss else "weighted-CE"
+    print(f"[{FLAGS.tag}] {len(tr)}/{len(va)} graphs | nc={nc} | edge_dim={edge_dim} | "
+          f"loss={loss_name} | select={FLAGS.select_metric} | "
+          f"params {sum(p.numel() for p in model.parameters()):,}")
 
-    opt = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-4)
-    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, a.epochs)
+    opt = torch.optim.AdamW(model.parameters(), lr=FLAGS.lr, weight_decay=FLAGS.weight_decay)
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, FLAGS.epochs)
 
     hist = {k: [] for k in ("epoch", "train_loss", "val_loss", "train_acc", "val_acc")}
-    best_acc, best_ep, best_state = -1.0, -1, None
+    best_score, best_ep, best_state = -1.0, -1, None
+    no_improve = 0
 
-    for ep in range(a.epochs):
+    for ep in range(FLAGS.epochs):
         model.train()
         for b in ltr:
             b = b.to(dev)
-            loss = F.cross_entropy(model(b), b.y, weight=w)
+            loss = compute_loss(model(b), b.y, w)
             opt.zero_grad()
             loss.backward()
-            nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+            nn.utils.clip_grad_norm_(model.parameters(), FLAGS.grad_clip)
             opt.step()
         sched.step()
 
@@ -315,29 +396,61 @@ def main():
         hist["train_acc"].append(mt["acc"])
         hist["val_acc"].append(mv["acc"])
 
-        if mv["acc"] > best_acc:
-            best_acc, best_ep = mv["acc"], ep
+        score = mv["f1"] if FLAGS.select_metric == "f1" else mv["acc"]
+        if score > best_score:
+            best_score, best_ep = score, ep
             best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
-            torch.save({"state": best_state, "epoch": ep, "nc": nc, "in_dim": tr[0].x.shape[1]}, outdir / f"{a.tag}_best.pt")
+            torch.save({"state": best_state, "epoch": ep, "nc": nc, "in_dim": tr[0].x.shape[1],
+                        "edge_dim": edge_dim}, outdir / f"{FLAGS.tag}_best.pt")
+            no_improve = 0
+        else:
+            no_improve += 1
 
-        if ep % 20 == 0 or ep == a.epochs - 1:
-            print(f"  ep{ep:3d} | train acc {mt['acc']*100:5.2f} | "f"val acc {mv['acc']*100:5.2f} loss {mv['loss']:.3f}")
+        if ep % 20 == 0 or ep == FLAGS.epochs - 1:
+            print(f"  ep{ep:3d} | train acc {mt['acc']*100:5.2f} | "
+                  f"val acc {mv['acc']*100:5.2f} f1 {mv['f1']*100:5.2f} loss {mv['loss']:.3f}")
+
+        if FLAGS.patience > 0 and no_improve >= FLAGS.patience:
+            print(f"  early stop at epoch {ep} (no improvement in {FLAGS.patience} epochs)")
+            break
 
     # reload best weights then evaluate on valid, make the plots
     model.load_state_dict(best_state)
-    mv, (yt, gp, yp) = evaluate(model, lva, dev, nc, w)
-    plot_confusion(yt, gp, names, "GAT (edge-conditioned)", "Validation", outdir / f"{a.tag}_confusion.png")
-    plot_curves(hist, best_ep, outdir / f"{a.tag}_curves.png")
-    plot_yolo_vs_gat(yt, gp, yp, names, nc, outdir / f"{a.tag}_yolo_vs_gat.png")
+    mv, (yt, gp, yp) = evaluate(model, lva, dev, nc, w, names=names)
+    plot_confusion(yt, gp, names, "GAT (edge-conditioned)", "Validation", outdir / f"{FLAGS.tag}_confusion.png")
+    plot_curves(hist, best_ep, outdir / f"{FLAGS.tag}_curves.png")
+    plot_yolo_vs_gat(yt, gp, yp, names, nc, outdir / f"{FLAGS.tag}_yolo_vs_gat.png")
 
-    json.dump(dict(best_epoch=best_ep, gat_acc=mv["acc"], gat_f1=mv["f1"],
-                   yolo_acc=mv["yolo_acc"], yolo_f1=mv["yolo_f1"]),
-              open(outdir / f"{a.tag}_summary.json", "w"), indent=2)
+    # extra stats: false-positive rejection + net fixed/broken nodes (same logic as plot_yolo_vs_gat)
+    fg = yt < nc
+    yt_fg, gp_fg, yp_fg = yt[fg], gp[fg], yp[fg]
+    fixed = int(((yp_fg != yt_fg) & (gp_fg == yt_fg)).sum())
+    broke = int(((yp_fg == yt_fg) & (gp_fg != yt_fg)).sum())
+    net = fixed - broke
+    bgm = yt == nc
+    fp_rejection = float((gp[bgm] == nc).mean()) if bgm.sum() > 0 else None
 
-    print(f"\n=== {a.tag} (best epoch {best_ep}) ===")
+    json.dump(dict(best_epoch=best_ep, select_metric=FLAGS.select_metric,
+                   gat_acc=mv["acc"], gat_f1=mv["f1"],
+                   yolo_acc=mv["yolo_acc"], yolo_f1=mv["yolo_f1"],
+                   focal_loss=FLAGS.focal_loss, focal_gamma=FLAGS.focal_gamma,
+                   hidden=FLAGS.hidden, heads=FLAGS.heads, layers=FLAGS.layers,
+                   dropout=FLAGS.dropout,
+                   fixed_nodes=fixed, broken_nodes=broke, net_nodes=net,
+                   fp_rejection=fp_rejection, n_background=int(bgm.sum()),
+                   f1_filtered=mv.get("f1_filtered"),
+                   acc_nondominant=mv.get("acc_nondominant"),
+                   yolo_acc_nondominant=mv.get("yolo_acc_nondominant")),
+              open(outdir / f"{FLAGS.tag}_summary.json", "w"), indent=2)
+
+    print(f"\n=== {FLAGS.tag} (best epoch {best_ep}, selected by {FLAGS.select_metric}) ===")
     print(f"  YOLO : acc {mv['yolo_acc']*100:5.2f}  F1 {mv['yolo_f1']*100:5.2f}")
     print(f"  GAT  : acc {mv['acc']*100:5.2f}  F1 {mv['f1']*100:5.2f}")
+    print(f"  GAT  : macro-F1 (support>={MIN_SUPPORT}) {mv.get('f1_filtered', 0)*100:5.2f}")
+    if "acc_nondominant" in mv:
+        print(f"  Excluding resistor+capacitor:  YOLO acc {mv['yolo_acc_nondominant']*100:5.2f}  "
+              f"GAT acc {mv['acc_nondominant']*100:5.2f}")
 
 
 if __name__ == "__main__":
-    main()
+    app.run(main)

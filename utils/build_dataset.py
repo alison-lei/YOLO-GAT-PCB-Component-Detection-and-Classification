@@ -146,7 +146,7 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--yolo-frac", type=float, default=0.60)
     ap.add_argument("--train-frac", type=float, default=0.25)
-    ap.add_argument("--seed", type=int, default=50)
+    ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--no-clahe", action="store_true")
     a = ap.parse_args()
 

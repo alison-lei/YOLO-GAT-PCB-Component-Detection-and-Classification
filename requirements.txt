@@ -12,3 +12,5 @@ torch_geometric
 scikit-learn
 scipy
 matplotlib
+
+absl-py
