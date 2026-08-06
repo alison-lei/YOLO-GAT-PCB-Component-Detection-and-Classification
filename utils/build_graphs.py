@@ -52,9 +52,9 @@ flags.DEFINE_string("root", None, "Dataset root containing <split>/images and <s
 flags.DEFINE_string("split", None, "Split to build graphs for: train / valid / test")
 flags.DEFINE_string("out", None, "Output .pt path for the built graphs")
 
-flags.DEFINE_integer("imgsz", 1024, "Inference image size fed to YOLO")
+flags.DEFINE_integer("imgsz", 1280, "Inference image size fed to YOLO")
 flags.DEFINE_float("conf", 0.15, "Confidence threshold at detection time")
-flags.DEFINE_float("nms_iou", 0.5, "NMS IoU threshold at detection time. Raise (e.g. 0.8-0.9) "
+flags.DEFINE_float("nms_iou", 0.4, "NMS IoU threshold at detection time. Raise (e.g. 0.8-0.9) "
                     "to let more overlapping/duplicate boxes survive and reach the graph.")
 flags.DEFINE_integer("min_nodes", 3, "Skip images with fewer detections than this")
 flags.DEFINE_integer("n_anchor", 2, "Anchor edges per node")

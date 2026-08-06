@@ -1,0 +1,242 @@
+{
+  "checkpoint": "results_bg_sweep/gat_bg0.7/gat_bg0.7_best.pt",
+  "graphs": "graphs/test.pt",
+  "nc": 23,
+  "class_names": [
+    "battery",
+    "button",
+    "buzzer",
+    "capacitor",
+    "clock",
+    "connector",
+    "diode",
+    "display",
+    "fuse",
+    "heatsink",
+    "ic",
+    "inductor",
+    "led",
+    "pads",
+    "pins",
+    "potentiometer",
+    "relay",
+    "resistor",
+    "switch",
+    "transducer",
+    "transformer",
+    "transistor",
+    "unknown"
+  ],
+  "n_graphs": 188,
+  "n_nodes_total": 6572,
+  "classes_present_in_test_set": [
+    "button",
+    "buzzer",
+    "capacitor",
+    "clock",
+    "connector",
+    "diode",
+    "display",
+    "fuse",
+    "heatsink",
+    "ic",
+    "inductor",
+    "led",
+    "pads",
+    "potentiometer",
+    "resistor",
+    "switch",
+    "transformer",
+    "transistor",
+    "unknown"
+  ],
+  "classes_absent_from_test_set": [
+    "battery",
+    "pins",
+    "relay",
+    "transducer"
+  ],
+  "gat": {
+    "accuracy": 0.859984984984985,
+    "macro_f1": 0.5026563137706345,
+    "n": 5328,
+    "n_classes_present": 19,
+    "n_classes_total": 23
+  },
+  "yolo_baseline": {
+    "accuracy": 0.8845720720720721,
+    "macro_f1": 0.5363502252351102,
+    "n": 5328,
+    "n_classes_present": 19,
+    "n_classes_total": 23
+  },
+  "accuracy_excluding_dominant": {
+    "accuracy": 0.6932294787297784,
+    "n": 1669,
+    "excluded": [
+      "resistor",
+      "capacitor"
+    ]
+  },
+  "macro_vs_weighted": {
+    "macro_unweighted": {
+      "precision": 0.5610092807695557,
+      "recall": 0.5250549981476471,
+      "f1": 0.5026563137706345
+    },
+    "weighted_by_support": {
+      "precision": 0.8975439392125529,
+      "recall": 0.859984984984985,
+      "f1": 0.8694896478374461
+    }
+  },
+  "node_edits": {
+    "fixed": 36,
+    "broken": 167,
+    "net": -131
+  },
+  "false_positive_rejection": {
+    "rate": 0.1342443729903537,
+    "n": 1244
+  },
+  "per_class": {
+    "battery": {
+      "precision": 0.0,
+      "recall": null,
+      "f1": null,
+      "support": 0
+    },
+    "button": {
+      "precision": 1.0,
+      "recall": 0.14754098360655737,
+      "f1": 0.2571428571428571,
+      "support": 61
+    },
+    "buzzer": {
+      "precision": 0.6666666666666666,
+      "recall": 1.0,
+      "f1": 0.8,
+      "support": 2
+    },
+    "capacitor": {
+      "precision": 0.9172185430463576,
+      "recall": 0.9547021171836534,
+      "f1": 0.9355850422195416,
+      "support": 2031
+    },
+    "clock": {
+      "precision": 0.8888888888888888,
+      "recall": 0.5853658536585366,
+      "f1": 0.7058823529411765,
+      "support": 41
+    },
+    "connector": {
+      "precision": 0.836,
+      "recall": 0.8228346456692913,
+      "f1": 0.8293650793650794,
+      "support": 254
+    },
+    "diode": {
+      "precision": 0.43956043956043955,
+      "recall": 0.5633802816901409,
+      "f1": 0.49382716049382713,
+      "support": 71
+    },
+    "display": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0,
+      "support": 2
+    },
+    "fuse": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0,
+      "support": 3
+    },
+    "heatsink": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0,
+      "support": 2
+    },
+    "ic": {
+      "precision": 0.8627450980392157,
+      "recall": 0.9230769230769231,
+      "f1": 0.8918918918918919,
+      "support": 429
+    },
+    "inductor": {
+      "precision": 0.578125,
+      "recall": 0.3978494623655914,
+      "f1": 0.4713375796178344,
+      "support": 93
+    },
+    "led": {
+      "precision": 0.9225352112676056,
+      "recall": 0.7237569060773481,
+      "f1": 0.8111455108359134,
+      "support": 181
+    },
+    "pads": {
+      "precision": 0.8756476683937824,
+      "recall": 0.771689497716895,
+      "f1": 0.8203883495145631,
+      "support": 219
+    },
+    "pins": {
+      "precision": 0.0,
+      "recall": null,
+      "f1": null,
+      "support": 0
+    },
+    "potentiometer": {
+      "precision": 0.1,
+      "recall": 0.6666666666666666,
+      "f1": 0.17391304347826086,
+      "support": 6
+    },
+    "relay": {
+      "precision": null,
+      "recall": null,
+      "f1": null,
+      "support": 0
+    },
+    "resistor": {
+      "precision": 0.9718770438194899,
+      "recall": 0.9127764127764127,
+      "f1": 0.9414000633512829,
+      "support": 1628
+    },
+    "switch": {
+      "precision": 0.2542372881355932,
+      "recall": 0.4838709677419355,
+      "f1": 0.3333333333333333,
+      "support": 31
+    },
+    "transducer": {
+      "precision": null,
+      "recall": null,
+      "f1": null,
+      "support": 0
+    },
+    "transformer": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0,
+      "support": 1
+    },
+    "transistor": {
+      "precision": 0.5161290322580645,
+      "recall": 0.6575342465753424,
+      "f1": 0.5783132530120482,
+      "support": 73
+    },
+    "unknown": {
+      "precision": 0.8295454545454546,
+      "recall": 0.365,
+      "f1": 0.5069444444444444,
+      "support": 200
+    }
+  }
+}

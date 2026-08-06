@@ -42,7 +42,8 @@ yolo11m.pt
 results_gat_d*_h*
 results_bg
 results_bg_0.5
-results_bgsweep
+old_bgsweep
+results_bg_sweep
 
 sweep_bg_scale.py
 compare_runs.py
@@ -55,3 +56,13 @@ train_nms0.8.pt
 valid_nms0.5.pt
 valid_nms0.6.pt
 valid_nms0.8.pt
+
+fics_pcb
+test_augmented
+
+pcb_wacv_2019
+wacv_test_data
+results
+focal_gamma1
+focal_gamma3
+main.sh

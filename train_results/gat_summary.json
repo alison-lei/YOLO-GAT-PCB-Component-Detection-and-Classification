@@ -1,0 +1,21 @@
+{
+  "tag": "gat_bg0.7",
+  "best_epoch": 23,
+  "select_metric": "acc",
+  "bg_scale": 0.7,
+  "hidden": 128,
+  "heads": 4,
+  "layers": 1,
+  "dropout": 0.1,
+  "gat_acc": 0.8791741935483871,
+  "gat_f1": 0.760549315406459,
+  "yolo_acc": 0.936825806451613,
+  "yolo_f1": 0.8489166012730345,
+  "acc_nondominant": 0.9172413793103448,
+  "yolo_acc_nondominant": 0.9399014778325123,
+  "fixed_nodes": 188,
+  "broken_nodes": 1305,
+  "net_nodes": -1117,
+  "fp_rejection": 0.2605054151624549,
+  "n_background": 6925
+}

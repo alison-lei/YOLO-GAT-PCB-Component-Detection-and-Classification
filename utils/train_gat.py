@@ -7,16 +7,19 @@ GAT ameliorates the detector's prediction rather than replacing it
 Outputs:
   <tag>_confusion.png     node-classification confusion matrix (on valid data)
   <tag>_curves.png        train vs valid accuracy and loss graphs
-  <tag>_yolo_vs_gat.png   comparison between YOLO and YOLO+GAT predictions to visually see if GAT improves YOLO's predicitons
+  <tag>_yolo_vs_gat.png   comparison between YOLO and YOLO+GAT predictions
   <tag>_best.pt           best checkpoint (selected via --select_metric)
+  <tag>_summary.json      final metrics
 
 Loss: alpha-balanced focal loss (--focal_loss, default on). Alpha = inverse-frequency
-class weights (same values previously used for weighted cross-entropy); gamma controls
-how strongly easy/confident predictions are downweighted. Set --nofocal_loss to fall
-back to plain weighted cross-entropy.
+class weights; gamma controls how strongly easy/confident predictions are downweighted.
+
+--bg_scale scales the background class's weight in that alpha vector (default 1.0 = no
+scaling). Lower values make the model less eager to predict background, trading false-
+positive rejection for classification accuracy.
 
 Command:
-  python utils/train_gat.py --train=graphs/train.pt --val=graphs/valid.pt --names=data/data.yaml --epochs=200 --tag=gat_edge
+  python utils/train_gat.py --train=graphs/train_nms0.4.pt --val=graphs/valid_nms0.4.pt --names=data/data.yaml --epochs=200 --tag=gat_bg1.0 --bg_scale=1.0
 """
 
 import json
@@ -41,6 +44,8 @@ random.seed(0)
 np.random.seed(0)
 torch.manual_seed(0)
 torch.cuda.manual_seed_all(0)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
 
 FLAGS = flags.FLAGS
 
@@ -48,8 +53,8 @@ FLAGS = flags.FLAGS
 flags.DEFINE_string("train", None, "Path to train graphs .pt file (from build_graphs.py)")
 flags.DEFINE_string("val", None, "Path to val graphs .pt file (from build_graphs.py)")
 flags.DEFINE_string("names", None, "YOLO data.yaml for class names in plots")
-flags.DEFINE_string("tag", "gat_edge", "Tag prefix for output files")
-flags.DEFINE_string("out", "final_results", "Output directory")
+flags.DEFINE_string("tag", "gat", "Tag prefix for output files")
+flags.DEFINE_string("out", "train_results", "Output directory")
 
 # --- training loop ---
 flags.DEFINE_integer("epochs", 200, "Number of training epochs")
@@ -57,20 +62,30 @@ flags.DEFINE_integer("batch_size", 8, "Batch size")
 flags.DEFINE_float("lr", 1e-3, "AdamW learning rate")
 flags.DEFINE_float("weight_decay", 1e-4, "AdamW weight decay")
 flags.DEFINE_float("grad_clip", 5.0, "Gradient clipping max norm")
-flags.DEFINE_integer("patience", 0, "Early-stop patience in epochs, 0 disables early stopping")
-flags.DEFINE_enum("select_metric", "f1", ["acc", "f1"],
-                   "Metric used to pick the best checkpoint. f1 (macro) is less dominated "
-                   "by majority classes than raw acc given the resistor/capacitor imbalance.")
+flags.DEFINE_integer("patience", 30, "Early-stop patience in epochs, 0 disables early stopping")
+flags.DEFINE_enum("select_metric", "acc", ["acc", "f1"],
+                   "Metric used to pick the best checkpoint. Defaults to accuracy: macro-F1 "
+                   "is noisy early in training on this dataset size and tends to pick an "
+                   "under-trained epoch-0 checkpoint.")
 
 # --- model architecture ---
 flags.DEFINE_integer("hidden", 128, "Hidden dimension")
 flags.DEFINE_integer("heads", 4, "GATv2Conv attention heads (must divide hidden evenly)")
 flags.DEFINE_integer("layers", 1, "Number of GATv2Conv layers (>1 risks oversmoothing)")
-flags.DEFINE_float("dropout", 0.2, "Dropout rate")
+flags.DEFINE_float("dropout", 0.1, "Dropout rate")
 
 # --- loss ---
 flags.DEFINE_boolean("focal_loss", True, "Use alpha-balanced focal loss instead of weighted CE")
-flags.DEFINE_float("focal_gamma", 2.0, "Focal loss focusing parameter (higher = more focus on hard examples)")
+flags.DEFINE_float("focal_gamma", 2.0, "Focal loss focusing parameter")
+flags.DEFINE_float("bg_scale", 0.7,
+                    "Scales the background class's loss weight. 1.0 = no scaling. Lower "
+                    "values (e.g. 0.5, 0.3) make the model less eager to predict background, "
+                    "trading false-positive rejection for classification accuracy.")
+
+# --- diagnostics ---
+flags.DEFINE_list("dominant_classes", ["resistor", "capacitor"],
+                   "Class names excluded when computing acc_nondominant, to check whether "
+                   "accuracy loss is concentrated in the largest classes.")
 
 flags.mark_flag_as_required("train")
 flags.mark_flag_as_required("val")
@@ -80,7 +95,6 @@ plt.rcParams.update({
     "axes.spines.top": False, "axes.spines.right": False, "axes.grid": True, "grid.alpha": 0.25, "grid.linewidth": 0.6,
 })
 
-# color code the plots
 C_YOLO, C_GAT = "#8d99ae", "#2b6cb0"
 C_FIX, C_BREAK = "#2a9d8f", "#d1495b"
 
@@ -90,8 +104,6 @@ class PCBGAT(nn.Module):
     def __init__(self, in_dim, nc, edge_dim, hidden=128, heads=4, layers=1, drop=0.2):
         super().__init__()
         self.nc, self.n_out, self.drop = nc, nc + 1, drop
-        # send input dimension to hidden dimension, work with abstraction
-        # introduce nonlinearity with ELU activation function, don't want dying neuron issue with ReLU
         self.inp = nn.Sequential(nn.Linear(in_dim, hidden), nn.ELU())
         self.convs, self.norms = nn.ModuleList(), nn.ModuleList()
         for _ in range(layers):
@@ -100,36 +112,34 @@ class PCBGAT(nn.Module):
             self.norms.append(nn.LayerNorm(hidden))
         self.delta = nn.Linear(hidden, self.n_out)
         self.gate = nn.Linear(hidden, 1)
-        nn.init.constant_(self.gate.bias, 1.0)  # start gate at sigmoid(1)=0.73, more willing to correct
+        nn.init.constant_(self.gate.bias, 1.0)  # gate starts at sigmoid(1)=0.73, more willing to correct
 
     def forward(self, d):
         h = self.inp(d.x)
         for conv, norm in zip(self.convs, self.norms):
-            # +h adds the adjustment
             h = norm(F.elu(conv(h, d.edge_index, d.edge_attr))) + h
             h = F.dropout(h, self.drop, self.training)
         p = d.yolo_probs.clamp(1e-4, 1 - 1e-4)
-        # convert YOLO's prediction from probabilities to logits
-        # YOLO does not understand false positive predictions, add column of zeros for the background class
         prior = torch.cat([torch.log(p / (1 - p)), torch.zeros(len(p), 1, device=p.device)], 1)
-
-        # final_logits = YOLO's_logits (prior) + gate (sigmoid caps it between 0 and 1) × proposed_change (delta from GAT)
         return prior + torch.sigmoid(self.gate(h)) * self.delta(h)
 
 
-# Data
 def to_pyg(path):
     blob = torch.load(path, weights_only=False)
     ds = [Data(x=g["x"], edge_index=g["edge_index"], edge_attr=g["edge_attr"], y=g["y"], yolo_probs=g["yolo_probs"]) for g in blob["graphs"]]
     return ds, blob["nc"]
 
 
-def class_weights(ds, n_out):
+def class_weights(ds, n_out, bg_scale=1.0):
+    """Inverse-frequency class weights over all n_out classes (nc real + 1 background).
+    bg_scale rescales only the background weight (last index)."""
     cnt = torch.zeros(n_out)
     for d in ds:
         cnt += torch.bincount(d.y, minlength=n_out).float()
     w = 1.0 / torch.sqrt(cnt.clamp(min=1))
-    return w / w.mean()
+    w = w / w.mean()
+    w[-1] *= bg_scale
+    return w
 
 
 def read_names(path, nc):
@@ -144,19 +154,11 @@ def read_names(path, nc):
     return (names or [f"class_{i}" for i in range(nc)]) + ["background"]
 
 
-def focal_loss(logits, targets, alpha, gamma, reduction="mean"):
-    """Alpha-balanced focal loss. alpha is a per-class weight tensor (same values
-    previously used for weighted cross-entropy); gamma downweights already-easy,
-    high-confidence predictions so the loss focuses on hard/rare cases."""
+def focal_loss(logits, targets, alpha, gamma):
     ce = F.cross_entropy(logits, targets, reduction="none")
     pt = torch.exp(-ce)
     alpha_t = alpha[targets]
-    loss = alpha_t * (1 - pt) ** gamma * ce
-    if reduction == "mean":
-        return loss.mean()
-    if reduction == "sum":
-        return loss.sum()
-    return loss
+    return (alpha_t * (1 - pt) ** gamma * ce).mean()
 
 
 def compute_loss(logits, y, w):
@@ -165,14 +167,10 @@ def compute_loss(logits, y, w):
     return F.cross_entropy(logits, y, weight=w)
 
 
-# thresholds for the diagnostic metrics
-MIN_SUPPORT = 50            # classes below this are excluded from the "fair" macro-F1
-DOMINANT_CLASSES = {"resistor", "capacitor"}  # excluded from the "non-dominant accuracy" metric
-
-
-# Evaluate the model on valid data
 @torch.no_grad()
-def evaluate(model, loader, dev, nc, w, names=None):
+def evaluate(model, loader, dev, nc, w, dominant_ids=None):
+    """Returns overall accuracy, macro-F1 (all nc classes), and accuracy excluding
+    dominant classes (dominant_ids), for both the GAT and raw YOLO predictions."""
     model.eval()
     Y, P, B, loss, n = [], [], [], 0.0, 0
     for b in loader:
@@ -186,31 +184,21 @@ def evaluate(model, loader, dev, nc, w, names=None):
     Y, P, B = (torch.cat(t).numpy() for t in (Y, P, B))
     fg = Y < nc
 
-    # support-filtered macro-F1: drop classes with too few instances to be learnable
-    support = np.bincount(Y[fg], minlength=nc)
-    learnable = [c for c in range(nc) if support[c] >= MIN_SUPPORT]
-    f1_filtered = float(f1_score(Y[fg], P[fg], labels=learnable, average="macro", zero_division=0))
-
-    # accuracy excluding the dominant resistor/capacitor classes:
-    # shows whether the accuracy drop is concentrated in those two big classes
     m = dict(loss=loss / max(1, n),
-             acc=float((P[fg] == Y[fg]).mean()),
-             f1=float(f1_score(Y[fg], P[fg], average="macro", zero_division=0)),
-             f1_filtered=f1_filtered,
-             yolo_acc=float((B[fg] == Y[fg]).mean()),
-             yolo_f1=float(f1_score(Y[fg], B[fg], average="macro", zero_division=0)))
+              acc=float((P[fg] == Y[fg]).mean()),
+              f1=float(f1_score(Y[fg], P[fg], average="macro", zero_division=0)),
+              yolo_acc=float((B[fg] == Y[fg]).mean()),
+              yolo_f1=float(f1_score(Y[fg], B[fg], average="macro", zero_division=0)))
 
-    if names is not None:
-        dom_ids = {i for i, nm in enumerate(names[:nc]) if nm in DOMINANT_CLASSES}
-        nondom = np.array([i for i in range(len(Y)) if fg[i] and Y[i] not in dom_ids])
-        if len(nondom) > 0:
+    if dominant_ids:
+        nondom = fg & ~np.isin(Y, list(dominant_ids))
+        if nondom.any():
             m["acc_nondominant"] = float((P[nondom] == Y[nondom]).mean())
             m["yolo_acc_nondominant"] = float((B[nondom] == Y[nondom]).mean())
 
     return m, (Y, P, B)
 
 
-# Plotting functions. Evaluating model by plotting data from valid data split
 def plot_confusion(y_true, y_pred, names, model_name, split, out):
     n = len(names)
     labels = list(range(n))
@@ -356,18 +344,19 @@ def main(argv):
     tr, nc = to_pyg(FLAGS.train)
     va, _ = to_pyg(FLAGS.val)
     names = read_names(FLAGS.names, nc)
+    dominant_ids = {i for i, nm in enumerate(names[:nc]) if nm in FLAGS.dominant_classes}
 
     ltr = DataLoader(tr, batch_size=FLAGS.batch_size, shuffle=True)
     ltr_eval = DataLoader(tr, batch_size=FLAGS.batch_size)
     lva = DataLoader(va, batch_size=FLAGS.batch_size)
-    w = class_weights(tr, nc + 1).to(dev)
+    w = class_weights(tr, nc + 1, bg_scale=FLAGS.bg_scale).to(dev)
 
-    edge_dim = tr[0].edge_attr.shape[1]  # auto-detected, matches whatever build_graphs.py produced
+    edge_dim = tr[0].edge_attr.shape[1]
     model = PCBGAT(tr[0].x.shape[1], nc, edge_dim, hidden=FLAGS.hidden, heads=FLAGS.heads,
                    layers=FLAGS.layers, drop=FLAGS.dropout).to(dev)
     loss_name = f"focal(gamma={FLAGS.focal_gamma})" if FLAGS.focal_loss else "weighted-CE"
     print(f"[{FLAGS.tag}] {len(tr)}/{len(va)} graphs | nc={nc} | edge_dim={edge_dim} | "
-          f"loss={loss_name} | select={FLAGS.select_metric} | "
+          f"loss={loss_name} | bg_scale={FLAGS.bg_scale} | select={FLAGS.select_metric} | "
           f"params {sum(p.numel() for p in model.parameters()):,}")
 
     opt = torch.optim.AdamW(model.parameters(), lr=FLAGS.lr, weight_decay=FLAGS.weight_decay)
@@ -414,14 +403,12 @@ def main(argv):
             print(f"  early stop at epoch {ep} (no improvement in {FLAGS.patience} epochs)")
             break
 
-    # reload best weights then evaluate on valid, make the plots
     model.load_state_dict(best_state)
-    mv, (yt, gp, yp) = evaluate(model, lva, dev, nc, w, names=names)
+    mv, (yt, gp, yp) = evaluate(model, lva, dev, nc, w, dominant_ids=dominant_ids)
     plot_confusion(yt, gp, names, "GAT (edge-conditioned)", "Validation", outdir / f"{FLAGS.tag}_confusion.png")
     plot_curves(hist, best_ep, outdir / f"{FLAGS.tag}_curves.png")
     plot_yolo_vs_gat(yt, gp, yp, names, nc, outdir / f"{FLAGS.tag}_yolo_vs_gat.png")
 
-    # extra stats: false-positive rejection + net fixed/broken nodes (same logic as plot_yolo_vs_gat)
     fg = yt < nc
     yt_fg, gp_fg, yp_fg = yt[fg], gp[fg], yp[fg]
     fixed = int(((yp_fg != yt_fg) & (gp_fg == yt_fg)).sum())
@@ -430,26 +417,25 @@ def main(argv):
     bgm = yt == nc
     fp_rejection = float((gp[bgm] == nc).mean()) if bgm.sum() > 0 else None
 
-    json.dump(dict(best_epoch=best_ep, select_metric=FLAGS.select_metric,
-                   gat_acc=mv["acc"], gat_f1=mv["f1"],
-                   yolo_acc=mv["yolo_acc"], yolo_f1=mv["yolo_f1"],
-                   focal_loss=FLAGS.focal_loss, focal_gamma=FLAGS.focal_gamma,
-                   hidden=FLAGS.hidden, heads=FLAGS.heads, layers=FLAGS.layers,
-                   dropout=FLAGS.dropout,
-                   fixed_nodes=fixed, broken_nodes=broke, net_nodes=net,
-                   fp_rejection=fp_rejection, n_background=int(bgm.sum()),
-                   f1_filtered=mv.get("f1_filtered"),
-                   acc_nondominant=mv.get("acc_nondominant"),
-                   yolo_acc_nondominant=mv.get("yolo_acc_nondominant")),
-              open(outdir / f"{FLAGS.tag}_summary.json", "w"), indent=2)
+    json.dump(dict(
+        tag=FLAGS.tag, best_epoch=best_ep, select_metric=FLAGS.select_metric,
+        bg_scale=FLAGS.bg_scale, hidden=FLAGS.hidden, heads=FLAGS.heads,
+        layers=FLAGS.layers, dropout=FLAGS.dropout,
+        gat_acc=mv["acc"], gat_f1=mv["f1"],
+        yolo_acc=mv["yolo_acc"], yolo_f1=mv["yolo_f1"],
+        acc_nondominant=mv.get("acc_nondominant"),
+        yolo_acc_nondominant=mv.get("yolo_acc_nondominant"),
+        fixed_nodes=fixed, broken_nodes=broke, net_nodes=net,
+        fp_rejection=fp_rejection, n_background=int(bgm.sum()),
+    ), open(outdir / f"{FLAGS.tag}_summary.json", "w"), indent=2)
 
     print(f"\n=== {FLAGS.tag} (best epoch {best_ep}, selected by {FLAGS.select_metric}) ===")
-    print(f"  YOLO : acc {mv['yolo_acc']*100:5.2f}  F1 {mv['yolo_f1']*100:5.2f}")
-    print(f"  GAT  : acc {mv['acc']*100:5.2f}  F1 {mv['f1']*100:5.2f}")
-    print(f"  GAT  : macro-F1 (support>={MIN_SUPPORT}) {mv.get('f1_filtered', 0)*100:5.2f}")
+    print(f"  YOLO : acc {mv['yolo_acc']*100:5.2f}  macro-F1 {mv['yolo_f1']*100:5.2f}")
+    print(f"  GAT  : acc {mv['acc']*100:5.2f}  macro-F1 {mv['f1']*100:5.2f}")
     if "acc_nondominant" in mv:
-        print(f"  Excluding resistor+capacitor:  YOLO acc {mv['yolo_acc_nondominant']*100:5.2f}  "
+        print(f"  Excluding {FLAGS.dominant_classes}:  YOLO acc {mv['yolo_acc_nondominant']*100:5.2f}  "
               f"GAT acc {mv['acc_nondominant']*100:5.2f}")
+    print(f"  FP rejection: {fp_rejection*100:.1f}%   net foreground edits: {net:+d} (fixed {fixed}, broken {broke})")
 
 
 if __name__ == "__main__":
