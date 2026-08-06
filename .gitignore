@@ -71,3 +71,5 @@ recall_yolo_vs_gat.png
 confusion_precision.csv
 confusion_recall.csv
 confusion_counts.csv
+old_train_results
+old_eval_out

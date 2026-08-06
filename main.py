@@ -11,6 +11,6 @@ python utils/build_graphs.py --weights=best.pt --root=data --split=test --out=gr
 python utils/train_gat.py --train=graphs/train.pt --val=graphs/valid.pt --names=data/data.yaml
 
 4. For evaluation:
-python utils/eval_gat.py --checkpoint=train_results/gat_bg0.7_best.pt --graphs=graphs/test.pt
+python utils/eval_gat.py --checkpoint=train_results/gat_best.pt --graphs=graphs/test.pt
 
 """
