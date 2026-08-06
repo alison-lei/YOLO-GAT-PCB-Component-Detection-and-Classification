@@ -67,3 +67,7 @@ focal_gamma1
 focal_gamma3
 main.sh
 final_results
+recall_yolo_vs_gat.png
+confusion_precision.csv
+confusion_recall.csv
+confusion_counts.csv
