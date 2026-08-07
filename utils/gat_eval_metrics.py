@@ -1,14 +1,3 @@
-"""
-gat_eval_metrics.py
-
-Pure-numpy / sklearn metric computations for the PCBGAT node-classification
-eval. Kept torch-free so it can be unit-tested independently of the graph
-inference. All foreground-only conventions match train_gat.py's evaluate():
-metrics are computed on nodes with y < nc (true background nodes, y == nc,
-are excluded) except for the false-positive rejection rate, which is defined
-over true background nodes.
-"""
-
 import numpy as np
 from sklearn.metrics import (
     precision_recall_fscore_support,

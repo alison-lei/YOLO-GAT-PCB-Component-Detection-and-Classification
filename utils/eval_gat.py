@@ -1,31 +1,3 @@
-"""
-eval_gat.py
-
-Standalone evaluation for a PCBGAT checkpoint on a held-out graphs file
-(test.pt / valid.pt). No training, no checkpoint selection on this data --
-load, run inference, report.
-
-Plots reproduce train_gat.py's visual style exactly (same colors, layout,
-cell annotations): confusion matrices with TRUE on the x-axis (bottom) and
-PREDICTED on the y-axis (left), diagonal boxed in red, background separated
-by a dashed line, real component names throughout (never "class_N").
-
-  confusion_recall.png     column-normalized (per true class) -- diagonal = recall
-                            same matrix train_gat.py's plot_confusion produces
-  confusion_precision.png  row-normalized (per predicted class) -- diagonal = precision
-                            same visual style, new normalization axis
-  yolo_vs_gat.png          per-class accuracy (YOLO vs GAT) + fixed/broken/net
-                            edits + FP-rejection note, same layout as
-                            train_gat.py's plot_yolo_vs_gat
-
-pip install torch torch-geometric numpy scikit-learn matplotlib absl-py --break-system-packages
-
-Usage:
-    python eval_gat.py --checkpoint runs/best_best.pt --graphs test.pt
-    python eval_gat.py --checkpoint runs/best_best.pt --graphs test.pt \
-        --class_yaml data.yaml --exclude_classes resistor,capacitor --out_dir eval_out
-"""
-
 import importlib
 import json
 from pathlib import Path

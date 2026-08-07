@@ -1,33 +1,3 @@
-"""
-build_graphs.py runs on a single split of data (train, valid, or test)
-It takes the predicted probability vectors from frozen YOLO and feeds it into the nodes of the graphs
-
-Graphs use Delaunay + anchor edges
-
-One graph created per image:
-  1. run frozen YOLO, keep the full class-probability vector for each detected component, GAT learns from the uncertainty provided by YOLO
-  2. IoU-match each detected node to ground truth -> unmatched detection is assigned to background class, index = nc)
-  3. build a Delaunay + anchor-edge graph.
-
-Output is a .pt file holding the graphs and the number of instances of false positives -> {graphs: [dict,...], nc: int, k: "delaunay+anchor"}.
-Each graph dict fully describes one graph: x, edge_index, edge_attr, y, yolo_probs, pos, xyxy, name.
-
-Node features are computed RELATIVE to each graph's own median component size (see
-build_graph_delaunay) to remove the apparent-scale confound: the same physical
-component photographed at different zoom levels would otherwise get very different
-absolute pixel sizes across images. Subtracting each graph's median log-size cancels
-that per-image zoom factor.
-
-Command:
-  python utils/build_graphs.py --weights=best.pt --root=data --split=train --out=graphs/train.pt
-  python utils/build_graphs.py --weights=best.pt --root=data --split=valid --out=graphs/valid.pt
-
-conf: default 0.15 raises recall into the graph (GAT then learns to reject the extra false positives)
-nms_iou: default 0.5. Raise (e.g. 0.8-0.9) to let more overlapping/duplicate detections survive
-         NMS and reach the graph, giving the GAT more redundant-detection false positives to
-         demonstrate rejecting.
-"""
-
 from pathlib import Path
 
 import numpy as np

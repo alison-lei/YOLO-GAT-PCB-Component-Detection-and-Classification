@@ -34,7 +34,7 @@ python utils/train_gat.py --train=graphs/train.pt --val=graphs/valid.pt --names=
 ```
 4. For evaluation:
 ```
-python utils/eval_gat.py --checkpoint=train_results/gat_bg0.7_best.pt --graphs=graphs/test.pt
+python utils/eval_gat.py --checkpoint=train_results/gat_best.pt --graphs=graphs/test.pt
 ```
 
 Note that `utils/build_dataset.py` contains the script to process the original [Kaggle](https://www.kaggle.com/datasets/aryanstein/pcb-component-detection-consolidated-dataset/data) and [Roboflow](https://universe.roboflow.com/luizf/printed-circuit-board-lafr6/dataset/1) datasets, and `utils/wacv_tile_prep.py` contains the script to process [PCB-WACV](https://sites.google.com/view/chiawen-kuo/home/pcb-component-detection) dataset into the format it is found in [YOLO-GAT PCB Component Classification Dataset](https://www.kaggle.com/datasets/projectiscool/yolo-gat-pcb-component-classification-dataset).

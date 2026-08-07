@@ -1,27 +1,3 @@
-"""
-train_gat.py Edge-conditioned GAT refines YOLO's predictions using graph context.
-
-The head is a gated residual over YOLO: it starts from the logit of YOLO's own class vector and adjusts it using the graph
-GAT ameliorates the detector's prediction rather than replacing it
-
-Outputs:
-  <tag>_confusion.png     node-classification confusion matrix (on valid data)
-  <tag>_curves.png        train vs valid accuracy and loss graphs
-  <tag>_yolo_vs_gat.png   comparison between YOLO and YOLO+GAT predictions
-  <tag>_best.pt           best checkpoint (selected via --select_metric)
-  <tag>_summary.json      final metrics
-
-Loss: alpha-balanced focal loss (--focal_loss, default on). Alpha = inverse-frequency
-class weights; gamma controls how strongly easy/confident predictions are downweighted.
-
---bg_scale scales the background class's weight in that alpha vector (default 1.0 = no
-scaling). Lower values make the model less eager to predict background, trading false-
-positive rejection for classification accuracy.
-
-Command:
-  python utils/train_gat.py --train=graphs/train_nms0.4.pt --val=graphs/valid_nms0.4.pt --names=data/data.yaml --epochs=200 --tag=gat_bg1.0 --bg_scale=1.0
-"""
-
 import json
 from pathlib import Path
 

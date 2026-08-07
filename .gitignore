@@ -73,3 +73,10 @@ confusion_recall.csv
 confusion_counts.csv
 old_train_results
 old_eval_out
+
+dropout_hidden_nms_tradeoff.png
+nms_sweep_tradeoff.png
+plot_dropout_hidden_sweep.py
+plot_nms_sweep.py
+
+

@@ -1,35 +1,3 @@
-"""
-build_dataset.py
-Takes raw Kaggle + Roboflow datasets stored as datasets/kaggle_dataset and datasets/roboflow_dataset,
-splits it into data/data.yaml and data/yolo, data/train, data/valid folders where each folder further contains images/ and labels/.
-
-Run from the two original datasets (Kaggle still has tiles+crops; Roboflow raw).
-
-Image groups within each raw dataset
-Kaggle:
-  TILE  00025__1024__1648___0  -> YOLO only
-  CROP  battery2, inductor29   -> YOLO only (rare-class source)
-  BOARD PCBA_17, ArduinoMega_Top  -> YOLO + GAT + val
-Roboflow: all full boards -> YOLO + GAT + val
-
-Buckets (after augmentation, all rotations of a board stay together):
-  yolo : TILE + CROP + share of BOARD and Roboflow (fine-tune YOLO)
-  train : full boards YOLO never saw (GAT train)
-  valid : full boards (final YOLO+GAT eval)
-
-Steps:
-classify -> md5 deduplication (remove perfect duplicates only) -> remap classes to follow cannonical format in utils/maps/kaggle.json -> 
-CLAHE -> rot90 (train-time buckets) -> write.
-
-NOTE: Roboflow labels are exported as instance-segmentation polygons (class + N (x,y)
-vertex pairs, N>=5), not plain YOLO boxes (class + cx cy w h). read_rows() below
-auto-detects and converts polygons to their tight axis-aligned bounding box. Kaggle's
-plain 5-field box labels pass through unchanged.
-
-Command:
-  python utils/build_dataset.py --kaggle datasets/kaggle_dataset --kaggle-map utils/maps/kaggle.json --roboflow datasets/roboflow_dataset --roboflow-map utils/maps/roboflow.json --out data --yolo-frac 0.6 --train-frac 0.25
-"""
-
 import sys
 import os
 

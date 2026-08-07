@@ -1,18 +1,3 @@
-"""
-wacv_tile_prep.py
-
-pcb_wacv_2019/<board>/<board>.jpg + <board>.{xml,html} (Pascal VOC boxes)
-  -> test_data/images/*.jpg (CLAHE'd tiles)
-  -> test_data/labels/*.txt (YOLO, canonical class indices)
-
-<name> field is "componenttype subid" (e.g. "pins unknown"); only the first
-token is the class. Objects starting with "text" (silkscreen/labels) are
-dropped -- not physical components.
-
-pip install opencv-python numpy absl-py --break-system-packages
-Usage: python wacv_tile_prep.py --input pcb_wacv_2019 --output test_data
-"""
-
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
